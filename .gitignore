@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build & bundler cache
+build/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+
+# Test, QA & headless browser artifacts
+coverage/
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Internal guides, design docs & markdown notes (keep only public README & LICENSE)
+*.md
+!/README.md
+!/LICENSE
+!/LICENSE.md
+AAA_PROCEDURAL_3D_SKILL_GUIDE.md
+docs/
+design/
+notes/
+specs/
+references/
+
+# Reference HTMLs & platform-injected conversation assets (keep only Vite entry /index.html)
+*.html
+!/index.html
+fable*.html
+public/assets/aistudio/
+.aistudio/
+/metadata.json
+
+# Environment variables & secrets
+.env
+.env.*
+.env*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS & IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
