@@ -54,6 +54,14 @@ npm run build
 | 终极技能 | `Q` | 终极充能轮盘 |
 | 快速近战 / 换弹 / 召唤首领 | `V` / `R` / `B` | 对应战术按键 |
 
+## 部署至 GitHub Pages
+
+本项目已内置相对资源路径配置与 GitHub Actions 自动构建工作流（`.github/workflows/deploy.yml`）：
+
+1. 将代码推送到 GitHub 仓库的 `main`（或 `master`）分支。
+2. 进入仓库 **Settings → Pages → Build and deployment**，将 **Source** 从 `Deploy from a branch` 改为 **`GitHub Actions`**。
+3. Actions 会自动执行 `npm install && npm run build` 并将编译后的 `dist/` 静态产物发布至 `https://<用户名>.github.io/<仓库名>/`（注意：不能直接将未构建的源码分支根目录作为静态站点发布，因为浏览器无法直接解析 `.tsx` 与未打包模块）。
+
 ## 开源许可
 
 本项目基于 [Apache-2.0 License](https://www.apache.org/licenses/LICENSE-2.0) 开源发布。
