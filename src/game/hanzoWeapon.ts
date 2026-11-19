@@ -21,6 +21,10 @@ import {
   type Vec3Like,
 } from './roguelike.ts';
 import { clamp, damp } from './rules.ts';
+import {
+  PROJECTILE_KIND,
+  type EcsCombatBridge,
+} from './ecsCombatBridge.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildMasterworkStormBowRig,
@@ -327,6 +331,18 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
       life: 0,
       elapsed: 0,
       hitIds: new Set<number>(),
+    });
+  }
+
+  const _ecsCand: any[] = [];
+  const ecsCombat = G.ecsCombat as EcsCombatBridge | undefined;
+  if (ecsCombat) {
+    ecsCombat.registerProjectilePool({
+      name: 'hanzo_arrows',
+      kind: PROJECTILE_KIND.HANZO_ARROW,
+      faction: 0,
+      items: arrowPool,
+      isActive: (a) => a.active,
     });
   }
 
@@ -1249,9 +1265,15 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
     if (!cb.hasSmartRicochet() || !G.enemies || !G.enemies.list) {
       return ricochetCandSlice;
     }
+    const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
+    let candList: any[] = G.enemies.list;
+    if (liveEcs) {
+      liveEcs.queryEnemiesInSphere(impactPoint.x, impactPoint.y, impactPoint.z, 26.5, _ecsCand);
+      candList = _ecsCand;
+    }
     let used = 0;
-    for (let i = 0; i < G.enemies.list.length && used < MAX_RICOCHET_CANDS; i++) {
-      const en = G.enemies.list[i];
+    for (let i = 0; i < candList.length && used < MAX_RICOCHET_CANDS; i++) {
+      const en = candList[i];
       if (!en.alive) continue;
       const aimY = en.pos.y + (en.type === 'gull' ? 0.15 : en.type === 'hound' ? 0.65 : 1.35);
       const dx = en.pos.x - impactPoint.x;

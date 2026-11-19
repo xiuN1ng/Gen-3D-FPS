@@ -1,4 +1,5 @@
 import { SystemPipeline, World } from '../engine/ecs/index.ts';
+import type { EcsCombatBridge } from './ecsCombatBridge.ts';
 import type { SpatialArenaPhysics } from './spatialPhysicsAdapter.ts';
 
 export interface PerfHudPhaseInput {
@@ -27,7 +28,9 @@ const SPARK_BARS = 80;
 const TEXT_REFRESH_SEC = 0.16;
 
 export function createPerfHud(G: Record<string, any>): PerfHudController {
-  const world = new World({ maxEntities: 2048 });
+  const world = G.ecsWorld instanceof World ? G.ecsWorld : new World({ maxEntities: 2048 });
+  G.ecsWorld = world;
+
   const pipeline = new SystemPipeline(world, {
     emaAlpha: 0.12,
     flushAfterEachPhase: false,
@@ -59,6 +62,15 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
       budgetMs: 1.5,
       execute() {
         currentPhaseInput?.runWeapon();
+      },
+    })
+    .addSystem({
+      name: 'ecs_broadphase',
+      phase: 'broadphase',
+      budgetMs: 0.5,
+      execute() {
+        const ecs = G.ecsCombat as EcsCombatBridge | undefined;
+        ecs?.syncProjectiles();
       },
     })
     .addSystem({
@@ -98,10 +110,14 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
   let uiRefreshAcc = TEXT_REFRESH_SEC;
   let isExpanded = true;
 
-  // Enable microsecond physics query timing while HUD is active
+  // Enable microsecond physics & ECS combat query timing while HUD is active
   const phys = G.physics as SpatialArenaPhysics | undefined;
   if (phys && phys.telemetry) {
     phys.telemetry.setTimingEnabled(true);
+  }
+  const initEcs = G.ecsCombat as EcsCombatBridge | undefined;
+  if (initEcs && initEcs.telemetry) {
+    initEcs.telemetry.setTimingEnabled(true);
   }
 
   // Build sleek non-intrusive DOM overlay in #app
@@ -116,7 +132,7 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
     'top:calc(52px + env(safe-area-inset-top, 0px))',
     'right:max(14px, env(safe-area-inset-right, 0px))',
     'z-index:85',
-    'width:268px',
+    'width:274px',
     'padding:8px 10px 9px',
     'background:rgba(9, 13, 18, 0.80)',
     'backdrop-filter:blur(6px)',
@@ -180,11 +196,16 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
     'justify-content:space-between',
     'align-items:center',
   ].join(';');
-  modeBtn.innerHTML = '<span>物理: SpatialHashGrid ⚡</span><span style="opacity:.8">[F4]</span>';
+  modeBtn.innerHTML = '<span>加速: SpatialHashGrid ⚡</span><span style="opacity:.8">[F4]</span>';
 
   const physLine = document.createElement('div');
   physLine.style.cssText = 'color:#9fe8ff;font-size:10.5px;white-space:pre;';
   physLine.textContent = 'Phys: 0.000 ms | Q: 0R 0G 0C\nGrid: 0 boxes · 0 nodes';
+
+  const ecsEntityLine = document.createElement('div');
+  ecsEntityLine.style.cssText =
+    'color:#98ffc1;font-size:10px;white-space:pre;border-top:1px solid rgba(232,228,218,0.12);padding-top:4px;';
+  ecsEntityLine.textContent = 'ECS: 0 ent (0敌 · 0弹) | 0.000 ms\nBroad: 0Ray 0AoE | DmgEv: 0/s';
 
   const ecsLine = document.createElement('div');
   ecsLine.style.cssText =
@@ -196,41 +217,54 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
     'color:rgba(255,195,110,0.92);font-size:10px;border-top:1px solid rgba(232,228,218,0.12);padding-top:4px;';
   renderLine.textContent = 'DC: -- | Tris: -- | Scale: --';
 
-  body.append(frameStatsLine, canvas, modeBtn, physLine, ecsLine, renderLine);
+  body.append(frameStatsLine, canvas, modeBtn, physLine, ecsEntityLine, ecsLine, renderLine);
   root.append(header, body);
 
   if (appEl) {
     appEl.appendChild(root);
   }
 
+  function isSpatialActive(): boolean {
+    if (phys?.telemetry) return phys.telemetry.spatialAccelerated;
+    const ecs = G.ecsCombat as EcsCombatBridge | undefined;
+    if (ecs?.telemetry) return ecs.telemetry.spatialAccelerated;
+    return true;
+  }
+
   function syncModeButtonVisual(): void {
-    const active = phys?.telemetry ? phys.telemetry.spatialAccelerated : true;
+    const active = isSpatialActive();
     if (active) {
       modeBtn.style.borderColor = 'rgba(60,255,120,0.45)';
       modeBtn.style.background = 'rgba(24,56,38,0.55)';
       modeBtn.style.color = '#7dffaa';
       modeBtn.innerHTML =
-        '<span>物理: SpatialHashGrid ⚡</span><span style="opacity:.8">[F4 对比]</span>';
+        '<span>加速: SpatialHashGrid ⚡</span><span style="opacity:.8">[F4 对比]</span>';
     } else {
       modeBtn.style.borderColor = 'rgba(255,110,72,0.65)';
       modeBtn.style.background = 'rgba(72,24,18,0.65)';
       modeBtn.style.color = '#ff9d80';
       modeBtn.innerHTML =
-        '<span>物理: Legacy O(N) 旧遍历</span><span style="opacity:.85">[F4 切回]</span>';
+        '<span>加速: Legacy O(N) 旧遍历</span><span style="opacity:.85">[F4 切回]</span>';
     }
   }
 
   function toggleExpanded(): void {
     isExpanded = !isExpanded;
     body.style.display = isExpanded ? 'flex' : 'none';
-    root.style.width = isExpanded ? '268px' : '168px';
+    root.style.width = isExpanded ? '274px' : '168px';
     root.style.padding = isExpanded ? '8px 10px 9px' : '5px 8px';
     titleSpan.textContent = isExpanded ? '⚡ ECS · PERF [F3]' : '⚡ [F3]';
   }
 
   function toggleSpatialAcceleration(): void {
-    if (!phys || !phys.telemetry) return;
-    phys.telemetry.setSpatialAccelerated(!phys.telemetry.spatialAccelerated);
+    const next = !isSpatialActive();
+    if (phys && phys.telemetry) {
+      phys.telemetry.setSpatialAccelerated(next);
+    }
+    const ecs = G.ecsCombat as EcsCombatBridge | undefined;
+    if (ecs && ecs.telemetry) {
+      ecs.telemetry.setSpatialAccelerated(next);
+    }
     syncModeButtonVisual();
   }
 
@@ -286,7 +320,7 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
 
       const pMs = sparkPhysRing[idx];
       if (pMs > 0.01) {
-        // Overlay physics ms amplified x5 in cyan at bottom for visual A/B clarity
+        // Overlay static physics + dynamic ECS combat ms amplified x5 in cyan
         const pH = Math.min(h, Math.max(1, ((pMs * 5) / maxScaleMs) * h));
         ctx2d.fillStyle = '#4ad8ff';
         ctx2d.fillRect(i * barW, h - pH, Math.max(1, barW - 1), pH);
@@ -337,6 +371,16 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
         `Q/f: ${rCalls}Ray ${pt.groundCalls}Grd ${pt.capsuleCalls}Cap | ${pt.activeColliders} box`;
     }
 
+    const ecs = G.ecsCombat as EcsCombatBridge | undefined;
+    if (ecs && ecs.telemetry) {
+      const et = ecs.telemetry;
+      ecsEntityLine.textContent =
+        `ECS: ${et.activeEntities} ent (${et.enemyEntities}敌 · ${et.projectileEntities}弹) | ${et.emaCombatMs.toFixed(3)} ms\n` +
+        `Broad: ${et.enemyRaycastCalls}Ray ${et.aoeQueryCalls}AoE | DmgEv: ${et.damageEventsPerSec.toFixed(0)}/s`;
+    } else {
+      ecsEntityLine.textContent = `ECS: ${world.aliveCount} ent | Broad: --`;
+    }
+
     const mobT = pipeline.getSystemTiming('mobility_game')?.emaMs ?? 0;
     const wpnT = pipeline.getSystemTiming('combat_weapon')?.emaMs ?? 0;
     const aiT = pipeline.getSystemTiming('ai_enemies')?.emaMs ?? 0;
@@ -368,9 +412,17 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
       return isExpanded;
     },
     stepFrame(input: PerfHudPhaseInput) {
+      const ecs = G.ecsCombat as EcsCombatBridge | undefined;
+      if (ecs && !ecs.telemetry.timingEnabled) {
+        ecs.telemetry.setTimingEnabled(true);
+      }
+
       currentPhaseInput = input;
       pipeline.step(input.dt);
       currentPhaseInput = null;
+
+      const pt = phys?.telemetry;
+      const et = ecs?.telemetry;
 
       const rawMs = input.rawFrameSec * 1000;
       if (rawMs > 0 && rawMs < 500) {
@@ -379,34 +431,36 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
         if (frameRingCount < FRAME_WINDOW) frameRingCount++;
 
         sparkMsRing[sparkHead] = rawMs;
-        sparkPhysRing[sparkHead] = phys?.telemetry ? phys.telemetry.physicsMsAcc : 0;
+        sparkPhysRing[sparkHead] =
+          (pt ? pt.physicsMsAcc : 0) + (et ? et.combatMsAcc : 0);
         sparkHead = (sparkHead + 1) % SPARK_BARS;
       }
 
-      const pt = phys?.telemetry;
-      uiRefreshAcc += input.rawFrameSec > 0 && input.rawFrameSec < 1 ? input.rawFrameSec : input.dt;
+      uiRefreshAcc +=
+        input.rawFrameSec > 0 && input.rawFrameSec < 1 ? input.rawFrameSec : input.dt;
       if (uiRefreshAcc >= TEXT_REFRESH_SEC) {
         uiRefreshAcc = 0;
         if (pt) {
-          // Snapshot current frame counters before resetting for clean readout
           pt.lastPhysicsMs = pt.physicsMsAcc;
           pt.emaPhysicsMs =
             pt.emaPhysicsMs === 0
               ? pt.physicsMsAcc
               : pt.emaPhysicsMs * 0.9 + pt.physicsMsAcc * 0.1;
-          refreshMetricsDom();
-          drawSparkline();
-          pt.physicsMsAcc = 0;
-          pt.raycastCalls = 0;
-          pt.losCalls = 0;
-          pt.groundCalls = 0;
-          pt.capsuleCalls = 0;
-        } else {
-          refreshMetricsDom();
-          drawSparkline();
         }
-      } else if (pt) {
-        pt.resetFrameCounters();
+        if (et) {
+          et.lastCombatMs = et.combatMsAcc;
+          et.emaCombatMs =
+            et.emaCombatMs === 0
+              ? et.combatMsAcc
+              : et.emaCombatMs * 0.9 + et.combatMsAcc * 0.1;
+        }
+        refreshMetricsDom();
+        drawSparkline();
+        pt?.resetFrameCounters();
+        et?.resetFrameCounters();
+      } else {
+        pt?.resetFrameCounters();
+        et?.resetFrameCounters();
       }
     },
     toggleExpanded,
