@@ -411,8 +411,10 @@ function cachedGeo(THREE: any, key: string, factory: () => any) {
 }
 
 function enableShadowsRecursive(root: any) {
+  root.frustumCulled = false;
   root.traverse((ch: any) => {
     ch.__customEnemyPart = true;
+    ch.frustumCulled = false;
     if (ch.isMesh) {
       ch.castShadow = true;
       ch.receiveShadow = true;
@@ -421,17 +423,54 @@ function enableShadowsRecursive(root: any) {
 }
 
 /**
+ * Ensures the skeleton root bone(s) live directly under `en.rig.group` rather than `en.rig.mesh`.
+ * Critical WebGL fix: in Three.js `WebGLRenderer.projectObject()`, setting `en.rig.mesh.visible = false`
+ * skips traversing ALL children of `en.rig.mesh`. Reparenting `bones.root` onto `en.rig.group` preserves
+ * identical `matrixWorld` skinning transforms while keeping all bone-mounted 3D samurai/shield/boss armor
+ * 100% visible when the legacy base `SkinnedMesh` is hidden!
+ */
+export function detachEnemyBonesToRigGroup(en: any) {
+  if (!en || !en.rig || !en.rig.group) return;
+  const grp = en.rig.group;
+  grp.frustumCulled = false;
+  const mesh = en.rig.mesh;
+  if (mesh) {
+    mesh.frustumCulled = false;
+    if (Array.isArray(mesh.children) && mesh.children.length > 0) {
+      const toMove: any[] = [];
+      for (const ch of mesh.children) {
+        if (ch && (ch.isBone || ch.type === 'Bone' || ch.name === 'root')) {
+          toMove.push(ch);
+        }
+      }
+      for (const bone of toMove) {
+        grp.add(bone);
+      }
+    }
+  }
+  if (en.rig.extraMesh) {
+    en.rig.extraMesh.frustumCulled = false;
+  }
+  const rootBone = en.rig.bones && en.rig.bones.root;
+  if (rootBone && rootBone.parent !== grp) {
+    grp.add(rootBone);
+  }
+}
+
+/**
  * Toggles visibility of the underlying engine `SkinnedMesh` children on `en.rig.group`
- * WITHOUT hiding `en.rig.group` itself or our custom articulated armor/mech attachments!
+ * WITHOUT hiding `en.rig.group` itself, skeleton bones, or our custom articulated armor/mech attachments!
  * Ensures `hound` and `gull` stay 100% original when `visible = true`, while hiding the
  * underlying soldier/dog mesh on custom mechs & Karakuri-Samurai units!
  */
 export function setBaseEnemySkinnedMeshVisible(en: any, visible: boolean) {
   if (!en || !en.rig || !en.rig.group) return;
+  detachEnemyBonesToRigGroup(en);
   for (const ch of en.rig.group.children) {
-    if (ch.__customEnemyRoot || ch.__customEnemyPart) continue;
+    if (ch.__customEnemyRoot || ch.__customEnemyPart || ch.isBone || ch.type === 'Bone') continue;
     if (ch.isSkinnedMesh || ch.isMesh) {
       ch.visible = visible;
+      ch.frustumCulled = false;
     }
   }
 }
@@ -448,6 +487,7 @@ export function applyKarakuriSamuraiRig(G: any, en: any, role: HumanoidEnemyRole
   const bones = en.rig && en.rig.bones ? en.rig.bones : null;
   if (!bones) return;
 
+  detachEnemyBonesToRigGroup(en);
   // Hide the low-poly modern human SkinnedMesh so only crisp Karakuri-Samurai PBR armor renders!
   setBaseEnemySkinnedMeshVisible(en, false);
 
@@ -930,6 +970,7 @@ export function buildMasterworkShieldGuardAttachment(G: any, en: any) {
   energyRim.castShadow = false;
   energyRim.receiveShadow = false;
 
+  detachEnemyBonesToRigGroup(en);
   const pelvisBone = en.rig && en.rig.bones ? en.rig.bones.pelvis : null;
   if (pelvisBone) {
     const restY = pelvisBone.position && pelvisBone.position.y > 0.4 ? pelvisBone.position.y : 0;
@@ -1349,6 +1390,13 @@ export function prewarmEnemyVariantPools(G: any) {
       if (crb) crb.visible = false;
       setBaseEnemySkinnedMeshVisible(hd, true);
       hCount++;
+    }
+  }
+
+  if (Array.isArray(dbg.gulls)) {
+    for (const gl of dbg.gulls) {
+      if (!gl || !gl.rig || !gl.rig.group) continue;
+      detachEnemyBonesToRigGroup(gl);
     }
   }
 

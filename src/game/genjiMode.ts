@@ -19,7 +19,6 @@ import {
   clampActorToAirWall,
   computeDeflectDirection,
   computeDraftCardSynergyPreview,
-  computeEnemyLocatorInfo,
   computeGenjiBuildStats,
   computeGunnerBuildStats,
   computeHanzoBuildStats,
@@ -51,7 +50,10 @@ import {
   type HanzoCooldownState,
   type HanzoStats,
   type HeroClassId,
+  type TouchAccelMode,
   type TouchAimCandidate,
+  type TouchGyroMode,
+  type TouchLayoutPreset,
   type TouchUiPreference,
   type UpgradeArchetype,
   type UpgradeRarity,
@@ -1151,8 +1153,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       return;
     }
 
-    // Inject mobile virtual thumbstick & fire state into G.input before base movement step
+    // Inject mobile virtual thumbstick, crouch toggle & fire state into G.input before base movement step
     touchCtrl.applyToInput();
+    if (touchCtrl.active) {
+      player.crouching = touchCtrl.isCrouching() && !G.input.sprint && player.onGround;
+    }
 
     // Gunner mobile joystick sprint synergy: forward stick push or active `疾` toggle drives full sprint smoothly
     if (activeHero === 'gunner' && touchCtrl.active) {
@@ -1164,40 +1169,71 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       }
     }
 
-    // Zero-GC Mobile Aim Assist (`准星摩擦减速 + 轻度吸附辅助`)
+    // Zero-GC Pro Mobile Aim Assist (`和平精英 / 瓦罗兰特手游级准星减速摩擦 + 移动跟枪辅助`)
     if (touchCtrl.active && touchCtrl.aimAssistEnabled && player.alive && player.enabled) {
       let candCount = 0;
       const enemyList = G.enemies && G.enemies.list;
       if (Array.isArray(enemyList)) {
-        for (let i = 0; i < enemyList.length && candCount < 18; i++) {
+        for (let i = 0; i < enemyList.length && candCount < 24; i++) {
           const en = enemyList[i];
           if (!en || !en.alive || !en.pos) continue;
-          const aimY = en.headPos && Number.isFinite(en.headPos.y) ? en.headPos.y - 0.12 : en.pos.y + 1.15;
+          const isDrone = en.type === 'gull';
+          const isDogOrMech = en.type === 'hound';
+          const chestY = isDrone
+            ? en.pos.y
+            : isDogOrMech
+              ? en.pos.y + 0.68
+              : en.pos.y + (en.__variant === 'boss' ? 1.85 : 1.15);
+          const headY =
+            en.headPos && Number.isFinite(en.headPos.y)
+              ? en.headPos.y - 0.06
+              : chestY + (isDrone ? 0.08 : 0.42);
           const aimX = en.headPos && Number.isFinite(en.headPos.x) ? en.headPos.x : en.pos.x;
           const aimZ = en.headPos && Number.isFinite(en.headPos.z) ? en.headPos.z : en.pos.z;
           const dxE = aimX - player.eye.x;
-          const dyE = aimY - player.eye.y;
+          const dyE = chestY - player.eye.y;
           const dzE = aimZ - player.eye.z;
-          if (dxE * dxE + dyE * dyE + dzE * dzE > 72 * 72) continue;
+          if (dxE * dxE + dyE * dyE + dzE * dzE > 74 * 74) continue;
           if (G.physics && G.physics.lineOfSight) {
-            _aheadProbe.set(aimX, aimY, aimZ);
-            if (!G.physics.lineOfSight(player.eye, _aheadProbe)) continue;
+            _aheadProbe.set(aimX, chestY, aimZ);
+            const hasChestLos = G.physics.lineOfSight(player.eye, _aheadProbe);
+            if (!hasChestLos) {
+              _aheadProbe.set(aimX, headY, aimZ);
+              if (!G.physics.lineOfSight(player.eye, _aheadProbe)) continue;
+            }
           }
+          const isPrio = en.__variant === 'boss' || en.__variant === 'sniper';
+          // Upper-chest anchor (primary tracking friction)
           let slot = _touchAimPool[candCount];
           if (!slot) {
             slot = { id: 0, aimPoint: { x: 0, y: 0, z: 0 }, isPriority: false };
             _touchAimPool[candCount] = slot;
           }
-          slot.id = i + 1;
-          slot.aimPoint.x = aimX;
-          slot.aimPoint.y = aimY;
-          slot.aimPoint.z = aimZ;
-          slot.isPriority = en.genjiVariant === 'boss' || en.genjiVariant === 'sniper';
+          slot.id = i * 2 + 1;
+          slot.aimPoint.x = en.pos.x;
+          slot.aimPoint.y = chestY;
+          slot.aimPoint.z = en.pos.z;
+          slot.isPriority = isPrio;
           candCount++;
+
+          // Weakspot / head anchor (for crisp headshot magnetism when aiming high)
+          if (!isDrone && candCount < 24) {
+            let headSlot = _touchAimPool[candCount];
+            if (!headSlot) {
+              headSlot = { id: 0, aimPoint: { x: 0, y: 0, z: 0 }, isPriority: true };
+              _touchAimPool[candCount] = headSlot;
+            }
+            headSlot.id = i * 2 + 2;
+            headSlot.aimPoint.x = aimX;
+            headSlot.aimPoint.y = headY;
+            headSlot.aimPoint.z = aimZ;
+            headSlot.isPriority = true;
+            candCount++;
+          }
         }
       }
       if (colossusState && colossusState.hp > 0 && colossusRoot.visible) {
-        for (let k = 0; k < 4 && candCount < 22; k++) {
+        for (let k = 0; k < 4 && candCount < 28; k++) {
           if (!colossusState.orbsAlive[k]) continue;
           const wp = colossusOrbWorldPos[k];
           let slot = _touchAimPool[candCount];
@@ -1233,6 +1269,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           isFiringOrDrawing: isEngagingFire,
           dt,
           candidates: _touchAimSlice,
+          frictionConeRad: 0.148, // ~8.5 deg smooth target slowdown cone
+          magnetConeRad: 0.118,   // ~6.8 deg gentle rotational strafe assist
+          maxRange: 74,
         });
         G.input.look.dx *= assist.frictionScale;
         G.input.look.dy *= assist.frictionScale;
@@ -1244,6 +1283,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
 
     const touchJumpJust = touchCtrl.consumeJumpPressed();
+    if (touchJumpJust) {
+      touchCtrl.setCrouching(false);
+    }
     const jumpPressed = G.input.pressed('jump') || consumeKey(['Space']) || touchJumpJust;
     const jumpHeld = G.input.down('jump') || isKeyHeld(['Space']) || touchCtrl.isJumpHeld();
 
@@ -2538,8 +2580,25 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         }
       }
 
-      // 0. Perimeter Air-Wall Containment for ALL Ground & Flying Enemies
+      // 0. Guarantee Scene-Graph Visibility, NaN/Underground Recovery & Perimeter Air-Wall Containment
+      if (en.rig && en.rig.group && !en.rig.group.visible) {
+        en.rig.group.visible = true;
+      }
       const isFlyingDrone = en.type === 'gull';
+      if (
+        !Number.isFinite(en.pos.x + en.pos.y + en.pos.z) ||
+        (!isFlyingDrone && en.pos.y < -2.6) ||
+        (isFlyingDrone && (en.pos.y < -1.5 || en.pos.y > 24))
+      ) {
+        const rescuePt = pickSpawnPointForVariant(en.__variant || (isFlyingDrone ? 'gull' : 'trooper'));
+        en.pos.copy(rescuePt);
+        if (!isFlyingDrone && G.physics && typeof G.physics.groundHeight === 'function') {
+          const rGy = G.physics.groundHeight(en.pos.x, en.pos.z, en.pos.y + 1.0);
+          if (Number.isFinite(rGy)) en.pos.y = rGy;
+        }
+        if (en.vel) en.vel.set(0, 0, 0);
+      }
+
       const airClamp = clampActorToAirWall({
         pos: en.pos,
         vel: en.vel,
@@ -2553,6 +2612,17 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         if (en.home) {
           en.home.x = clamp(en.home.x, -64, 68);
           en.home.z = clamp(en.home.z, -42, 42);
+        }
+      }
+
+      // Keep wave survival enemies actively converging on the player so they never idle behind far walls
+      if (en.__variant !== 'sniper' && player.alive) {
+        if (en.lastKnown) {
+          en.lastKnown.copy(player.pos);
+        }
+        if (en.mode === 'patrol') {
+          en.mode = 'investigate';
+          en.modeT = Math.max(en.modeT || 0, 10);
         }
       }
 
@@ -2740,8 +2810,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
             const stepM = Math.min(3.4, distP - 1.6);
             const nx = en.pos.x + (dxP / distP) * stepM;
             const nz = en.pos.z + (dzP / distP) * stepM;
-            const gy = G.physics.groundHeight(nx, nz, en.pos.y + 1.2);
-            if (Number.isFinite(gy) && Math.abs(gy - en.pos.y) <= 1.1) {
+            const gy = G.physics.groundHeight(nx, nz, en.pos.y + 0.6);
+            if (Number.isFinite(gy) && Math.abs(gy - en.pos.y) <= 0.85) {
               en.pos.set(nx, gy, nz);
             }
             en.__guardBrokenT = 1.45; // Post-lunge recovery exposes unshielded weakpoint!
@@ -2870,24 +2940,33 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         }
       }
 
-      // 6. Anti-Straggler Closing Nudge
-      if (en.__variant !== 'sniper' && en.type !== 'gull' && player.alive) {
+      // 6. Anti-Straggler & Stuck Relocation (covers both Ground Units & Flying Drones!)
+      if (en.__variant !== 'sniper' && player.alive) {
         const horizD = Math.hypot(en.pos.x - player.pos.x, en.pos.z - player.pos.z);
         const dyAbs = Math.abs(en.pos.y - player.pos.y);
-        if (horizD > 34 || dyAbs > 5.2) {
+        const isStuckBehindCover =
+          !isFlyingDrone &&
+          horizD > 20 &&
+          (en.__animMoveSpd || 0) < 0.22 &&
+          !en.los;
+        if (horizD > 34 || (!isFlyingDrone && dyAbs > 5.0) || isStuckBehindCover) {
           en.__stragglerT = (en.__stragglerT || 0) + dt;
           en.mode = 'engage';
           if (en.goal) {
             en.goal.copy(player.pos);
             en.hasGoal = true;
           }
-          if (en.__stragglerT > 5.0 && (horizD > 40 || dyAbs > 6.0)) {
-            _aiOrigin.set(en.pos.x, en.pos.y + 1.4, en.pos.z);
+          if (en.__stragglerT > 4.2 && (horizD > 38 || (!isFlyingDrone && dyAbs > 5.6) || isStuckBehindCover)) {
+            _aiOrigin.set(en.pos.x, en.pos.y + (isFlyingDrone ? 0.2 : 1.4), en.pos.z);
             const seen = horizD < 32 && G.physics.lineOfSight(_aiOrigin, player.eye);
             if (!seen) {
-              const nearPt = pickSpawnPointForVariant(en.__variant || 'trooper');
-              if (nearPt.distanceTo(player.pos) < horizD - 6) {
+              const nearPt = pickSpawnPointForVariant(en.__variant || (isFlyingDrone ? 'gull' : 'trooper'));
+              if (nearPt.distanceTo(player.pos) < horizD - 4 || isStuckBehindCover) {
                 en.pos.copy(nearPt);
+                if (!isFlyingDrone && G.physics && typeof G.physics.groundHeight === 'function') {
+                  const gy = G.physics.groundHeight(en.pos.x, en.pos.z, en.pos.y + 1.0);
+                  if (Number.isFinite(gy)) en.pos.y = gy;
+                }
                 en.__stragglerT = 0;
               }
             }
@@ -4707,7 +4786,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       touchCtrl.syncGunnerHudState(
         gunnerCd,
         gunnerWeapon.ammo,
-        gunnerWeapon.magSize
+        gunnerWeapon.magSize,
+        gunnerStats.helixCooldown,
+        gunnerStats.bioticCooldown
+      );
+      touchCtrl.syncVitals(
+        player.health,
+        player.maxHealth,
+        gunnerCd.visorActiveT > 0
+          ? `目镜 ${gunnerWeapon.ammo}/∞`
+          : `${gunnerWeapon.ammo} / ∞`
       );
     } else if (activeHero === 'hanzo') {
       visorHudEl.hidden = true;
@@ -4798,7 +4886,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
       slotMeleeLbl.textContent = '弓击';
 
-      touchCtrl.syncHanzoHudState(hanzoCd, agilityState.isWallClimbing);
+      touchCtrl.syncHanzoHudState(
+        hanzoCd,
+        agilityState.isWallClimbing,
+        hanzoStats.sonicCooldown,
+        hanzoStats.stormArrowCooldown
+      );
+      touchCtrl.syncVitals(
+        player.health,
+        player.maxHealth,
+        hanzoCd.stormActiveT > 0 && hanzoCd.stormArrowsLeft > 0
+          ? `岚矢 ×${hanzoCd.stormArrowsLeft}`
+          : hanzoCd.sonicArmed
+            ? '音障矢'
+            : `蓄力 ${Math.round(hanzoCd.drawRatio * 100)}%`
+      );
     } else {
       visorHudEl.hidden = true;
       bowHudEl.hidden = true;
@@ -4856,7 +4958,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         agilityState.isWallClimbing,
         swiftResetFlashT > 0,
         genjiWeapon.ammo,
-        genjiWeapon.magSize
+        genjiWeapon.magSize,
+        buildStats.swiftStrikeCooldown,
+        buildStats.deflectCooldown + buildStats.deflectDuration
+      );
+      touchCtrl.syncVitals(
+        player.health,
+        player.maxHealth,
+        cdState.dragonActiveT > 0
+          ? `龙刃 ${cdState.dragonActiveT.toFixed(1)}s`
+          : `${genjiWeapon.ammo} / ∞`
       );
     }
 
@@ -4897,162 +5008,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     updateEnemySpiritTracker();
   }
 
-  const _projVec = new THREE.Vector3();
   let compassMarkerSyncT = 0;
 
-  // Pre-allocated zero-GC candidate pool for `updateEnemySpiritTracker` (eliminates per-frame object allocations)
-  interface TrackerCandidate {
-    pos: any;
-    headY: number;
-    isBoss: boolean;
-    inSonic: boolean;
-    labelPrefix: string;
-    distSq: number;
-  }
-  const MAX_TRACKER_CANDS = 40;
-  const trackerCandPool: TrackerCandidate[] = [];
-  for (let i = 0; i < MAX_TRACKER_CANDS; i++) {
-    trackerCandPool.push({
-      pos: null,
-      headY: 0,
-      isBoss: false,
-      inSonic: false,
-      labelPrefix: '',
-      distSq: 0,
-    });
-  }
-  const trackerCandSlice: TrackerCandidate[] = [];
-
   function updateEnemySpiritTracker() {
-    if ((gameApi.state !== 'playing' && gameApi.state !== 'intro') || upgradeOpen || !player.alive) {
-      for (const s of trackerSlots) s.root.hidden = true;
-      return;
-    }
-
-    const vw = window.innerWidth || 1440;
-    const vh = window.innerHeight || 900;
-    const halfW = vw * 0.5;
-    const halfH = vh * 0.5;
-
-    trackerCandSlice.length = 0;
-    let candIdx = 0;
-
-    if (colossusState && colossusState.hp > 0 && colossusRoot.visible && candIdx < MAX_TRACKER_CANDS) {
-      const dx = colossusPos.x - player.pos.x;
-      const dz = colossusPos.z - player.pos.z;
-      const slot = trackerCandPool[candIdx++];
-      slot.pos = colossusPos;
-      slot.headY = colossusPos.y + 6.4;
-      slot.isBoss = true;
-      slot.inSonic = hanzoWeapon.isPointInSonicField(colossusPos);
-      slot.labelPrefix = '荒神 ';
-      slot.distSq = dx * dx + dz * dz;
-      trackerCandSlice.push(slot);
-    }
-
-    const aliveList = G.enemies && G.enemies.list ? G.enemies.list : [];
-    let totalAlive = 0;
-    for (let i = 0; i < aliveList.length; i++) {
-      const en = aliveList[i];
-      if (!en.alive) continue;
-      totalAlive++;
-      if (candIdx >= MAX_TRACKER_CANDS) continue;
-      const dx = en.pos.x - player.pos.x;
-      const dz = en.pos.z - player.pos.z;
-      const isMiniBoss = en.__variant === 'boss';
-      const isSniper = en.__variant === 'sniper';
-      const isSpider = en.__variant === 'spider_mech';
-      const isShield = en.__variant === 'shield_guard';
-      const isCrab = en.__variant === 'mortar_crab';
-      const inSonic = hanzoWeapon.isPointInSonicField(en.pos);
-      const slot = trackerCandPool[candIdx++];
-      slot.pos = en.pos;
-      slot.headY = en.pos.y + (isMiniBoss ? 2.75 : en.type === 'hound' ? 1.25 : 1.95);
-      slot.isBoss = isMiniBoss;
-      slot.inSonic = inSonic;
-      slot.labelPrefix = inSonic
-        ? '声呐 '
-        : isMiniBoss
-          ? '统领 '
-          : isSniper
-            ? '狙 '
-            : isShield
-              ? '盾 '
-              : isSpider
-                ? '蛛 '
-                : isCrab
-                  ? '蟹 '
-                  : '';
-      slot.distSq = dx * dx + dz * dz;
-      trackerCandSlice.push(slot);
-    }
-
-    trackerCandSlice.sort((a, b) =>
-      a.inSonic !== b.inSonic
-        ? a.inSonic
-          ? -1
-          : 1
-        : a.isBoss !== b.isBoss
-          ? a.isBoss
-            ? -1
-            : 1
-          : a.distSq - b.distSq
-    );
-
-    let used = 0;
-    for (let i = 0; i < trackerCandSlice.length && used < trackerSlots.length; i++) {
-      const c = trackerCandSlice[i];
-      const info = computeEnemyLocatorInfo({
-        playerX: player.pos.x,
-        playerY: player.pos.y,
-        playerZ: player.pos.z,
-        forwardX: player.forward.x,
-        forwardZ: player.forward.z,
-        enemyX: c.pos.x,
-        enemyY: c.pos.y,
-        enemyZ: c.pos.z,
-        isBoss: c.isBoss,
-        isOccluded: true,
-        remainingHostiles: totalAlive + spawnQueue.length,
-      });
-      if (!info.shouldShowMarker && !c.inSonic) continue;
-
-      _projVec.set(c.pos.x, c.headY, c.pos.z).project(G.camera);
-      const inFrontClip = _projVec.z >= -1 && _projVec.z <= 1 && !info.isBehind;
-      let sx = (_projVec.x * 0.5 + 0.5) * vw;
-      let sy = (-_projVec.y * 0.5 + 0.5) * vh;
-      let isEdge = false;
-
-      const padX = 64;
-      const padTop = 78;
-      const padBot = 112;
-      if (!inFrontClip || sx < padX || sx > vw - padX || sy < padTop || sy > vh - padBot) {
-        isEdge = true;
-        // Map signed relative yaw onto a clean elliptical screen-edge guide!
-        const ellRx = Math.max(120, halfW - 76);
-        const ellRy = Math.max(90, halfH - 104);
-        sx = halfW + Math.sin(info.relYawRad) * ellRx;
-        const vertBias = clamp(-info.dy * 9 - (info.isBehind ? -ellRy * 0.55 : 0), -ellRy * 0.78, ellRy * 0.78);
-        sy = clamp(halfH + vertBias, padTop, vh - padBot);
-      }
-
-      const slot = trackerSlots[used++];
-      slot.root.hidden = false;
-      slot.root.classList.toggle('is-boss', c.isBoss);
-      slot.root.classList.toggle('is-sonic', c.inSonic);
-      slot.root.classList.toggle('is-priority', info.urgency === 'priority');
-      slot.root.classList.toggle('is-edge', isEdge);
-      slot.root.style.transform = `translate3d(${Math.round(sx)}px, ${Math.round(sy)}px, 0) translate(-50%, -50%)`;
-      slot.distEl.textContent = `${c.labelPrefix}${info.distMeters}m`;
-      slot.elevEl.textContent = info.elevationLabel;
-      slot.elevEl.classList.toggle('is-low', info.elevation === 'low');
-    }
-
-    for (let i = used; i < trackerSlots.length; i++) {
+    // Enemy HUD red-dot wallhack markers (`.g-tracker-layer` / `.g-trk`) are intentionally disabled
+    // so enemies are engaged directly as crisp 3D samurai/mech models in the battlefield!
+    trackerLayerEl.hidden = true;
+    for (let i = 0; i < trackerSlots.length; i++) {
       trackerSlots[i].root.hidden = true;
     }
 
-    // Sync only shrine objective to G.hud.setMarkers so native 3D yellow pins never duplicate `.g-trk`!
+    if ((gameApi.state !== 'playing' && gameApi.state !== 'intro') || upgradeOpen || !player.alive) {
+      return;
+    }
+
+    // Sync only the optional village-shrine objective pin (`烽火祠`) onto compass/objective markers
     compassMarkerSyncT -= 0.016;
     if (compassMarkerSyncT <= 0 && G.hud && typeof G.hud.setMarkers === 'function') {
       compassMarkerSyncT = 0.35;
@@ -5172,7 +5142,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
   })();
 
-  // Add BGM Toggle, Perf HUD Toggle, Touch Controls, Sensitivity, Aim Assist & iOS Fullscreen Guide inside Settings Panel
+  // Add BGM Toggle, Perf HUD Toggle, Pro Mobile Controls (PUBG/Valorant style), Gyroscope & iOS Fullscreen Guide inside Settings Panel
   const settingsPane = menus.root.querySelector('[data-pane="settings"]');
   if (settingsPane) {
     const touchFrag = document.createDocumentFragment();
@@ -5208,28 +5178,92 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       </div>
     `;
 
+    const touchLayoutRow = document.createElement('div');
+    touchLayoutRow.className = 'row';
+    touchLayoutRow.innerHTML = `
+      <label id="l-touch-layout">触屏键位布局</label>
+      <div class="seg" role="group" aria-labelledby="l-touch-layout">
+        <button type="button" data-tlayout="claw3">三指竞技 (左上开火)</button>
+        <button type="button" data-tlayout="thumb2">双指经典</button>
+      </div>
+    `;
+
     const touchSensRow = document.createElement('div');
     touchSensRow.className = 'row';
     const initSensPct = Math.round(touchCtrl.touchSensitivity * 100);
     touchSensRow.innerHTML = `
-      <label for="s-touch-sens">触屏转向灵敏度</label>
+      <label for="s-touch-sens">镜头转向灵敏度</label>
       <div class="slider">
         <input id="s-touch-sens" type="range" min="30" max="240" step="5" value="${initSensPct}">
-        <output id="o-touch-sens">${(touchCtrl.touchSensitivity).toFixed(2)}×</output>
+        <output id="o-touch-sens">${touchCtrl.touchSensitivity.toFixed(2)}×</output>
+      </div>
+    `;
+
+    const fireSensRow = document.createElement('div');
+    fireSensRow.className = 'row';
+    const initFireSensPct = Math.round(touchCtrl.firingSensitivity * 100);
+    fireSensRow.innerHTML = `
+      <label for="s-fire-sens">开火压枪灵敏度</label>
+      <div class="slider">
+        <input id="s-fire-sens" type="range" min="45" max="130" step="5" value="${initFireSensPct}">
+        <output id="o-fire-sens">${touchCtrl.firingSensitivity.toFixed(2)}×</output>
+      </div>
+    `;
+
+    const touchAccelRow = document.createElement('div');
+    touchAccelRow.className = 'row';
+    touchAccelRow.innerHTML = `
+      <label id="l-touch-accel">划屏转向曲线</label>
+      <div class="seg" role="group" aria-labelledby="l-touch-accel">
+        <button type="button" data-taccel="speed">速度加速 (推荐)</button>
+        <button type="button" data-taccel="linear">固定线性</button>
+      </div>
+    `;
+
+    const touchGyroRow = document.createElement('div');
+    touchGyroRow.className = 'row';
+    touchGyroRow.innerHTML = `
+      <label id="l-touch-gyro">陀螺仪辅助瞄准</label>
+      <div class="seg" role="group" aria-labelledby="l-touch-gyro">
+        <button type="button" data-tgyro="off">关闭</button>
+        <button type="button" data-tgyro="ads_fire">开火开启</button>
+        <button type="button" data-tgyro="always">总是开启</button>
       </div>
     `;
 
     const touchAssistRow = document.createElement('div');
     touchAssistRow.className = 'row';
     touchAssistRow.innerHTML = `
-      <label id="l-touch-assist">触屏辅助瞄准</label>
+      <label id="l-touch-assist">准星吸附辅助</label>
       <div class="seg" role="group" aria-labelledby="l-touch-assist">
         <button type="button" data-tassist="on">开启</button>
         <button type="button" data-tassist="off">关闭</button>
       </div>
     `;
 
-    touchFrag.append(bgmRow, perfRow, touchRow, touchSensRow, touchAssistRow);
+    const touchOpaRow = document.createElement('div');
+    touchOpaRow.className = 'row';
+    const initOpaPct = Math.round(touchCtrl.buttonOpacity * 100);
+    touchOpaRow.innerHTML = `
+      <label for="s-touch-opa">触控按键透明度</label>
+      <div class="slider">
+        <input id="s-touch-opa" type="range" min="45" max="100" step="5" value="${initOpaPct}">
+        <output id="o-touch-opa">${initOpaPct}%</output>
+      </div>
+    `;
+
+    touchFrag.append(
+      bgmRow,
+      perfRow,
+      touchRow,
+      touchLayoutRow,
+      touchSensRow,
+      fireSensRow,
+      touchAccelRow,
+      touchGyroRow,
+      touchAssistRow,
+      touchOpaRow
+    );
 
     const fsRowEl = settingsPane.querySelector('[data-row="fs"]') as HTMLElement | null;
     if (isIosWebkitBrowser || (fsRowEl && fsRowEl.hidden && !isStandalonePwa)) {
@@ -5258,6 +5292,15 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       });
       touchRow.querySelectorAll<HTMLButtonElement>('button[data-tpref]').forEach((b) => {
         b.setAttribute('aria-pressed', String(b.dataset.tpref === touchCtrl.preference));
+      });
+      touchLayoutRow.querySelectorAll<HTMLButtonElement>('button[data-tlayout]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(b.dataset.tlayout === touchCtrl.layoutPreset));
+      });
+      touchAccelRow.querySelectorAll<HTMLButtonElement>('button[data-taccel]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(b.dataset.taccel === touchCtrl.accelMode));
+      });
+      touchGyroRow.querySelectorAll<HTMLButtonElement>('button[data-tgyro]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(b.dataset.tgyro === touchCtrl.gyroMode));
       });
       touchAssistRow.querySelectorAll<HTMLButtonElement>('button[data-tassist]').forEach((b) => {
         const wantOn = b.dataset.tassist === 'on';
@@ -5295,6 +5338,29 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         syncTouchSeg();
       });
     });
+    touchLayoutRow.querySelectorAll<HTMLButtonElement>('button[data-tlayout]').forEach((b) => {
+      b.addEventListener('click', () => {
+        touchCtrl.setLayoutPreset((b.dataset.tlayout || 'claw3') as TouchLayoutPreset);
+        syncTouchSeg();
+      });
+    });
+    touchAccelRow.querySelectorAll<HTMLButtonElement>('button[data-taccel]').forEach((b) => {
+      b.addEventListener('click', () => {
+        touchCtrl.setAccelMode((b.dataset.taccel || 'speed') as TouchAccelMode);
+        syncTouchSeg();
+      });
+    });
+    touchGyroRow.querySelectorAll<HTMLButtonElement>('button[data-tgyro]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const nextGyro = (b.dataset.tgyro || 'off') as TouchGyroMode;
+        void touchCtrl.setGyroMode(nextGyro).then((ok) => {
+          if (!ok && G.hud && typeof G.hud.message === 'function') {
+            G.hud.message('浏览器未授予陀螺仪传感器权限（需 HTTPS 环境）', 2.4);
+          }
+          syncTouchSeg();
+        });
+      });
+    });
     touchAssistRow.querySelectorAll<HTMLButtonElement>('button[data-tassist]').forEach((b) => {
       b.addEventListener('click', () => {
         touchCtrl.setAimAssistEnabled(b.dataset.tassist === 'on');
@@ -5308,6 +5374,24 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         const val = Number(tSensInput.value) / 100;
         touchCtrl.setTouchSensitivity(val);
         if (tSensOut) tSensOut.textContent = `${touchCtrl.touchSensitivity.toFixed(2)}×`;
+      });
+    }
+    const fSensInput = fireSensRow.querySelector('#s-fire-sens') as HTMLInputElement | null;
+    const fSensOut = fireSensRow.querySelector('#o-fire-sens') as HTMLElement | null;
+    if (fSensInput) {
+      fSensInput.addEventListener('input', () => {
+        const val = Number(fSensInput.value) / 100;
+        touchCtrl.setFiringSensitivity(val);
+        if (fSensOut) fSensOut.textContent = `${touchCtrl.firingSensitivity.toFixed(2)}×`;
+      });
+    }
+    const tOpaInput = touchOpaRow.querySelector('#s-touch-opa') as HTMLInputElement | null;
+    const tOpaOut = touchOpaRow.querySelector('#o-touch-opa') as HTMLElement | null;
+    if (tOpaInput) {
+      tOpaInput.addEventListener('input', () => {
+        const pct = Number(tOpaInput.value);
+        touchCtrl.setButtonOpacity(pct / 100);
+        if (tOpaOut) tOpaOut.textContent = `${Math.round(touchCtrl.buttonOpacity * 100)}%`;
       });
     }
     syncTouchSeg();

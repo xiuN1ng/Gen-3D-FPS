@@ -540,3 +540,281 @@ test('Mobile UI & iOS Chrome Adaptation: Perf HUD auto-collapse on touch viewpor
   assert.equal(el.hidden, false);
   hud.dispose();
 });
+
+test('Enemy WebGL Scene-Graph Visibility Regression: bone-mounted Samurai, Sniper, Shield Guard, Boss, Spider & Crab meshes remain 100% visible up to scene root when base SkinnedMesh is hidden', async () => {
+  const {
+    applyKarakuriSamuraiRig,
+    buildMasterworkMortarCrabRig,
+    buildMasterworkShieldGuardAttachment,
+    buildMasterworkSpiderMechRig,
+    setBaseEnemySkinnedMeshVisible,
+  } = await import('./enemyModels.ts');
+
+  const isEffectivelyVisible = (obj: any, stopAt: any): boolean => {
+    let cur = obj;
+    while (cur) {
+      if (cur.visible === false) return false;
+      if (cur === stopAt) return true;
+      cur = cur.parent;
+    }
+    return false;
+  };
+
+  // Reproduce the legacy engine.ts `pm()` bug where `bones.root` was parented under `mesh` (`c.add(a[0])`)
+  const makeMockEnemy = () => {
+    const group = new THREE.Group();
+    const baseGeom = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+    const baseMat = new THREE.MeshStandardMaterial();
+    const mesh = new THREE.SkinnedMesh(baseGeom, [baseMat]);
+    group.add(mesh);
+
+    const boneNames = [
+      'root',
+      'pelvis',
+      'torso',
+      'head',
+      'armL',
+      'forearmL',
+      'armR',
+      'forearmR',
+      'thighL',
+      'shinL',
+      'footL',
+      'thighR',
+      'shinR',
+      'footR',
+    ];
+    const bones: Record<string, THREE.Bone> = {};
+    for (const name of boneNames) {
+      const b = new THREE.Bone();
+      b.name = name;
+      bones[name] = b;
+    }
+    bones.root.add(bones.pelvis);
+    bones.pelvis.add(bones.torso, bones.thighL, bones.thighR);
+    bones.torso.add(bones.head, bones.armL, bones.armR);
+    bones.armL.add(bones.forearmL);
+    bones.armR.add(bones.forearmR);
+    bones.thighL.add(bones.shinL);
+    bones.shinL.add(bones.footL);
+    bones.thighR.add(bones.shinR);
+    bones.shinR.add(bones.footR);
+    // Intentionally attach `bones.root` to `mesh` to prove `detachEnemyBonesToRigGroup` rescues it!
+    mesh.add(bones.root);
+
+    return { rig: { group, mesh, bones } };
+  };
+
+  const mockG = { THREE };
+
+  for (const role of ['trooper', 'sniper', 'shield_guard', 'boss'] as const) {
+    const en: any = makeMockEnemy();
+    applyKarakuriSamuraiRig(mockG, en, role);
+    if (role === 'shield_guard') {
+      buildMasterworkShieldGuardAttachment(mockG, en).visible = true;
+    }
+
+    assert.equal(
+      en.rig.mesh.visible,
+      false,
+      `${role}: legacy base SkinnedMesh must be hidden`
+    );
+    assert.equal(
+      en.rig.bones.root.parent,
+      en.rig.group,
+      `${role}: root bone MUST be reparented onto en.rig.group so WebGLRenderer traverses it`
+    );
+
+    let visibleCustomMeshes = 0;
+    en.rig.group.traverse((node: any) => {
+      if (node.isMesh && node !== en.rig.mesh && isEffectivelyVisible(node, en.rig.group)) {
+        visibleCustomMeshes++;
+        assert.equal(
+          node.frustumCulled,
+          false,
+          `${role}: custom enemy mesh must disable frustum culling`
+        );
+      }
+    });
+    assert.ok(
+      visibleCustomMeshes >= 12,
+      `${role}: expected >= 12 effectively visible 3D armor/weapon meshes in WebGL, got ${visibleCustomMeshes}`
+    );
+  }
+
+  // Verify Spider Mech & Mortar Crab also render >= 12 visible meshes and restore base Hound mesh on reset
+  const houndEn: any = makeMockEnemy();
+  const spiderGrp = buildMasterworkSpiderMechRig(mockG, houndEn);
+  spiderGrp.visible = true;
+  assert.equal(houndEn.rig.mesh.visible, false);
+  let spiderVisibleMeshes = 0;
+  houndEn.rig.group.traverse((n: any) => {
+    if (n.isMesh && n !== houndEn.rig.mesh && isEffectivelyVisible(n, houndEn.rig.group)) {
+      spiderVisibleMeshes++;
+    }
+  });
+  assert.ok(spiderVisibleMeshes >= 12, `spider_mech visible meshes: ${spiderVisibleMeshes}`);
+
+  spiderGrp.visible = false;
+  const crabGrp = buildMasterworkMortarCrabRig(mockG, houndEn);
+  crabGrp.visible = true;
+  let crabVisibleMeshes = 0;
+  houndEn.rig.group.traverse((n: any) => {
+    if (n.isMesh && n !== houndEn.rig.mesh && isEffectivelyVisible(n, houndEn.rig.group)) {
+      crabVisibleMeshes++;
+    }
+  });
+  assert.ok(crabVisibleMeshes >= 12, `mortar_crab visible meshes: ${crabVisibleMeshes}`);
+
+  crabGrp.visible = false;
+  setBaseEnemySkinnedMeshVisible(houndEn, true);
+  assert.equal(houndEn.rig.mesh.visible, true, 'Base hound SkinnedMesh must restore cleanly');
+});
+
+test('Pro Mobile Controls (Peacekeeper Elite / Valorant Mobile standard) & Enemy HUD Red-Dot Removal', async () => {
+  const {
+    computeGyroLookDelta,
+    computeProTouchLookDelta,
+    computeSprintLatchState,
+  } = await import('./roguelike.ts');
+  const { createGenjiTouchController } = await import('./genjiTouch.ts');
+
+  // 1. Auto-Sprint Latch (`上滑锁定疾跑`)
+  const notInZone = computeSprintLatchState({ dxPx: 0, dyPx: -30, maxRadiusPx: 44 });
+  assert.equal(notInZone.inLatchZone, false);
+  assert.equal(notInZone.sprintLocked, false);
+
+  const latchedOnRelease = computeSprintLatchState({
+    dxPx: 4,
+    dyPx: -72,
+    maxRadiusPx: 44,
+    released: true,
+  });
+  assert.equal(latchedOnRelease.inLatchZone, true);
+  assert.equal(latchedOnRelease.sprintLocked, true);
+
+  const cancelledByPullBack = computeSprintLatchState({
+    dxPx: 0,
+    dyPx: 24,
+    maxRadiusPx: 44,
+    wasLatched: true,
+  });
+  assert.equal(cancelledByPullBack.sprintLocked, false);
+
+  // 2. Pro Camera Curve + Firing Recoil-Control Damping + Tap-Tremor Suppression
+  const freeSwipe = computeProTouchLookDelta({
+    deltaXPx: 18,
+    deltaYPx: 0,
+    dtMs: 12,
+    sensitivity: 1.0,
+    firingSensScale: 0.8,
+    isFiring: false,
+    accelMode: 'speed',
+  });
+  const firingSwipe = computeProTouchLookDelta({
+    deltaXPx: 18,
+    deltaYPx: 0,
+    dtMs: 12,
+    sensitivity: 1.0,
+    firingSensScale: 0.8,
+    isFiring: true,
+    accelMode: 'speed',
+  });
+  assert.ok(
+    firingSwipe.dx < freeSwipe.dx * 0.82,
+    'Firing look delta must be damped for steady recoil control'
+  );
+
+  const linearSwipeFast = computeProTouchLookDelta({
+    deltaXPx: 24,
+    deltaYPx: 0,
+    dtMs: 8,
+    sensitivity: 1.0,
+    accelMode: 'linear',
+  });
+  const linearSwipeSlow = computeProTouchLookDelta({
+    deltaXPx: 24,
+    deltaYPx: 0,
+    dtMs: 32,
+    sensitivity: 1.0,
+    accelMode: 'linear',
+  });
+  assert.ok(
+    Math.abs(linearSwipeFast.dx - linearSwipeSlow.dx) < 1e-9,
+    'Linear mode must produce identical radian turn regardless of swipe speed'
+  );
+
+  const tapTremor = computeProTouchLookDelta({
+    deltaXPx: 0.2,
+    deltaYPx: 0.1,
+    dtMs: 16,
+    sensitivity: 1.0,
+    isFiring: true,
+  });
+  assert.ok(Math.abs(tapTremor.dx) < 0.0004, 'Sub-pixel tap tremor on Fire must be suppressed');
+
+  // 3. Landscape-Aware Gyroscope Fine-Aim
+  const gyro90 = computeGyroLookDelta({
+    deltaBetaDeg: 2.0,
+    deltaGammaDeg: -1.5,
+    screenAngleDeg: 90,
+    gyroSensitivity: 1.0,
+  });
+  const gyro270 = computeGyroLookDelta({
+    deltaBetaDeg: 2.0,
+    deltaGammaDeg: -1.5,
+    screenAngleDeg: 270,
+    gyroSensitivity: 1.0,
+  });
+  assert.ok(Math.abs(gyro90.dx + gyro270.dx) < 1e-9, '270° landscape must invert 90° gyro axes');
+  assert.ok(Math.abs(gyro90.dy + gyro270.dy) < 1e-9);
+  const gyroSpike = computeGyroLookDelta({ deltaBetaDeg: 175, deltaGammaDeg: 0, screenAngleDeg: 90 });
+  assert.equal(gyroSpike.dx, 0, 'Gimbal wraparound spike must be rejected');
+
+  // 4. Touch Controller Crouch, Vitals Status Bar & Layout Presets
+  const host = document.createElement('div');
+  const mockInput = {
+    touch: false,
+    sensitivity: 1,
+    invertY: false,
+    move: { x: 0, y: 0 },
+    look: { dx: 0, dy: 0 },
+    sprint: false,
+    crouch: false,
+    fire: false,
+  };
+  const tc = createGenjiTouchController(
+    { params: { touch: '1' }, input: mockInput },
+    host,
+    {
+      onSwiftStrike: () => {},
+      onDeflect: () => {},
+      onDragonblade: () => {},
+      onPause: () => {},
+      onAudioUnlock: () => {},
+    }
+  );
+  tc.setGameplayVisible(true);
+  assert.equal(tc.active, true);
+  assert.equal(tc.layoutPreset, 'claw3');
+
+  tc.setLayoutPreset('thumb2');
+  assert.equal(tc.root.dataset.layout, 'thumb2');
+  tc.setButtonOpacity(0.65);
+  assert.equal(tc.buttonOpacity, 0.65);
+
+  tc.setCrouching(true);
+  assert.equal(tc.isCrouching(), true);
+  tc.applyToInput();
+  assert.equal(mockInput.crouch, true);
+
+  tc.syncVitals(142, 200, '18 / ∞');
+  assert.equal(tc.root.querySelector('[data-f="hp-val"]')?.textContent, '142');
+  assert.equal(tc.root.querySelector('[data-f="ammo-val"]')?.textContent, '18 / ∞');
+
+  // 5. Verify `.g-tracker-layer` & `.g-trk` enemy HUD red dots stay hidden
+  const trackerLayer = document.querySelector('.g-tracker-layer') as HTMLElement | null;
+  if (trackerLayer) {
+    assert.equal(trackerLayer.hidden, true, 'Enemy HUD red-dot tracker layer must stay hidden');
+  }
+});

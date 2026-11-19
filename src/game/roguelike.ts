@@ -1145,6 +1145,167 @@ export function computeTouchLookDelta(
   };
 }
 
+export type TouchAccelMode = 'speed' | 'linear';
+export type TouchGyroMode = 'off' | 'ads_fire' | 'always';
+export type TouchLayoutPreset = 'thumb2' | 'claw3';
+
+/**
+ * Peacekeeper Elite / Valorant Mobile Auto-Sprint Latch (`上滑锁定疾跑`) pure evaluator:
+ * - Pushing the thumbstick upward cleanly past `latchRatio * maxRadiusPx` enters the visual latch zone (`inLatchZone`).
+ * - Releasing inside the latch zone or holding inside it for `>= holdThresholdSec` engages hands-free `sprintLocked = true`.
+ * - Pulling downward (`dyPx > maxRadiusPx * 0.35`) cancels any active sprint lock immediately.
+ */
+export function computeSprintLatchState(params: {
+  dxPx: number;
+  dyPx: number;
+  maxRadiusPx?: number;
+  latchDistanceRatio?: number;
+  holdInZoneSec?: number;
+  holdThresholdSec?: number;
+  released?: boolean;
+  wasLatched?: boolean;
+}): {
+  inLatchZone: boolean;
+  sprintLocked: boolean;
+  latchProgress: number;
+} {
+  const rMax = Math.max(16, params.maxRadiusPx ?? 44);
+  const latchDist = rMax * Math.max(1.2, params.latchDistanceRatio ?? 1.42);
+  const maxLateral = rMax * 0.78;
+  const holdNeed = Math.max(0.05, params.holdThresholdSec ?? 0.14);
+  const holdCur = Math.max(0, params.holdInZoneSec ?? 0);
+
+  const inLatchZone = params.dyPx <= -latchDist && Math.abs(params.dxPx) <= maxLateral;
+  const pulledBack = params.dyPx > rMax * 0.35;
+
+  if (pulledBack) {
+    return { inLatchZone: false, sprintLocked: false, latchProgress: 0 };
+  }
+
+  if (inLatchZone && (params.released || holdCur >= holdNeed)) {
+    return { inLatchZone: true, sprintLocked: true, latchProgress: 1 };
+  }
+
+  if (params.wasLatched && !params.released) {
+    return {
+      inLatchZone,
+      sprintLocked: true,
+      latchProgress: 1,
+    };
+  }
+
+  return {
+    inLatchZone,
+    sprintLocked: Boolean(params.wasLatched),
+    latchProgress: inLatchZone ? clamp01(holdCur / holdNeed) : 0,
+  };
+}
+
+/**
+ * Valorant Mobile / Peacekeeper Elite Pro Camera Aiming Curve (`竞技级触控跟枪与开火压枪曲线`):
+ * - Uses real touch angular speed (`px / ms`) when `dtMs` is available so 60Hz and 120Hz screens feel identical!
+ * - Suppresses sub-pixel button-tap tremor (`< 0.38px`) while holding the Fire button so tapping Fire never jerks headshots off-target.
+ * - Applies separate `firingSensScale` (`开火镜头灵敏度`, default `0.80`) when dragging while firing/drawing bow for rock-steady recoil control (`压枪`).
+ * - Supports `'speed'` (Valorant/PUBG S-curve flick acceleration) and `'linear'` (1:1 fixed muscle-memory distance).
+ */
+export function computeProTouchLookDelta(params: {
+  deltaXPx: number;
+  deltaYPx: number;
+  dtMs?: number;
+  sensitivity?: number;
+  firingSensScale?: number;
+  isFiring?: boolean;
+  accelMode?: TouchAccelMode;
+  invertY?: boolean;
+}): { dx: number; dy: number } {
+  const maxStep = 140;
+  const cx = Math.max(-maxStep, Math.min(maxStep, Number.isFinite(params.deltaXPx) ? params.deltaXPx : 0));
+  const cy = Math.max(-maxStep, Math.min(maxStep, Number.isFinite(params.deltaYPx) ? params.deltaYPx : 0));
+  const sens = Math.max(0.15, Math.min(3.5, Number.isFinite(params.sensitivity) ? (params.sensitivity as number) : 1.0));
+  const fireScale = params.isFiring
+    ? Math.max(0.35, Math.min(1.5, Number.isFinite(params.firingSensScale) ? (params.firingSensScale as number) : 0.8))
+    : 1.0;
+
+  const stepDistPx = Math.hypot(cx, cy);
+  if (stepDistPx < 1e-5) {
+    return { dx: 0, dy: 0 };
+  }
+
+  // Micro-tremor suppression on Fire button press (`< 0.38px` finger pad squish)
+  const tapTremorGate =
+    params.isFiring && stepDistPx < 0.38 ? (stepDistPx / 0.38) * 0.45 : 1.0;
+
+  let flickBoost = 1.0;
+  if ((params.accelMode ?? 'speed') === 'speed') {
+    const safeDtMs = Math.max(4, Math.min(50, Number.isFinite(params.dtMs) && (params.dtMs as number) > 0 ? (params.dtMs as number) : 16.67));
+    const speedPxPerMs = stepDistPx / safeDtMs;
+    // <= 0.18 px/ms (~3px @ 60Hz): 1.0x pixel-accurate headshot tracking
+    // 0.18 .. 1.95 px/ms: smooth Hermite S-curve up to 1.92x for effortless 180° flick turns
+    const accelT = clamp01((speedPxPerMs - 0.18) / 1.77);
+    const smoothAccel = accelT * accelT * (3 - 2 * accelT);
+    // While actively firing, cap flick boost gentler (1.35x) so recoil pull-down stays predictable
+    const maxBoost = params.isFiring ? 0.35 : 0.92;
+    flickBoost = 1.0 + maxBoost * smoothAccel;
+  }
+
+  const radPerPx = 0.0046 * sens * fireScale * flickBoost * tapTremorGate;
+  const pitchStability = params.isFiring ? 0.84 : 0.78;
+
+  return {
+    dx: cx * radPerPx,
+    dy: cy * radPerPx * pitchStability * (params.invertY ? -1 : 1),
+  };
+}
+
+/**
+ * Landscape-Aware Mobile Gyroscope Fine-Aim Mapper (`和平精英 / 瓦罗兰特手游 陀螺仪微调瞄准`):
+ * Maps `DeviceOrientationEvent` (`beta`, `gamma` deltas in degrees) into camera `{ dx, dy }` radians
+ * according to current landscape screen orientation (`90` vs `-90` vs `0`), with noise deadband & spike clamp.
+ */
+export function computeGyroLookDelta(params: {
+  deltaBetaDeg: number;
+  deltaGammaDeg: number;
+  screenAngleDeg?: number;
+  gyroSensitivity?: number;
+  invertY?: boolean;
+}): { dx: number; dy: number } {
+  const dBeta = Number.isFinite(params.deltaBetaDeg) ? params.deltaBetaDeg : 0;
+  const dGamma = Number.isFinite(params.deltaGammaDeg) ? params.deltaGammaDeg : 0;
+  // Reject wraparound jumps (+/-180 deg gimbal flip)
+  if (Math.abs(dBeta) > 25 || Math.abs(dGamma) > 25) {
+    return { dx: 0, dy: 0 };
+  }
+
+  const angle = ((Math.round((params.screenAngleDeg ?? 90) / 90) * 90) % 360 + 360) % 360;
+  // In standard landscape-primary (90 deg clockwise): tilting left/right around vertical screen axis is `dBeta`, pitch is `-dGamma`
+  // In landscape-secondary (270 / -90 deg): signs invert!
+  let yawDeg = 0;
+  let pitchDeg = 0;
+  if (angle === 90) {
+    yawDeg = -dBeta;
+    pitchDeg = dGamma;
+  } else if (angle === 270) {
+    yawDeg = dBeta;
+    pitchDeg = -dGamma;
+  } else {
+    yawDeg = -dGamma;
+    pitchDeg = -dBeta;
+  }
+
+  const magDeg = Math.hypot(yawDeg, pitchDeg);
+  // Sensor noise floor deadband (`< 0.035°`)
+  if (magDeg < 0.035) {
+    return { dx: 0, dy: 0 };
+  }
+
+  const sens = Math.max(0.1, Math.min(3.0, Number.isFinite(params.gyroSensitivity) ? (params.gyroSensitivity as number) : 1.0));
+  const degToRad = (Math.PI / 180) * 1.15 * sens;
+  return {
+    dx: yawDeg * degToRad,
+    dy: pitchDeg * degToRad * (params.invertY ? -1 : 1),
+  };
+}
+
 export interface TouchAimCandidate {
   id: number;
   aimPoint: Vec3Like;
