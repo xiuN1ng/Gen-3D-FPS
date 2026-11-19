@@ -1,0 +1,21 @@
+{
+  "name": "守望争锋 · 花村山城",
+  "short_name": "守望争锋",
+  "description": "纯程序化 WebGL2 横版宽屏第一人称三英雄战术肉鸽动作射击游戏",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0b0d0f",
+  "theme_color": "#0b0d0f",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "./apple-touch-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

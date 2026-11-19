@@ -18,12 +18,30 @@ export interface PerfHudController {
   readonly world: World;
   readonly pipeline: SystemPipeline;
   readonly expanded: boolean;
+  readonly visible: boolean;
   stepFrame: (input: PerfHudPhaseInput) => void;
   toggleExpanded: () => void;
+  setVisible: (visible: boolean) => void;
   toggleSpatialAcceleration: () => void;
   dispose: () => void;
 }
 
+export interface PerfHudViewportEnv {
+  coarsePointer: boolean;
+  maxTouchPoints: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+export function shouldAutoCollapsePerfHud(env: PerfHudViewportEnv): boolean {
+  const shortEdge = Math.min(env.viewportWidth, env.viewportHeight);
+  return (
+    (env.coarsePointer || env.maxTouchPoints > 0) &&
+    (shortEdge <= 600 || env.viewportWidth <= 960)
+  );
+}
+
+const PERF_VIS_STORAGE_KEY = 'hanamura_perf_hud_v1';
 const FRAME_WINDOW = 240;
 const SPARK_BARS = 80;
 const TEXT_REFRESH_SEC = 0.16;
@@ -105,11 +123,38 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
   const sparkMsRing = new Float32Array(SPARK_BARS);
   const sparkPhysRing = new Float32Array(SPARK_BARS);
 
+  const detectCompactMobile = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    const coarse =
+      typeof window.matchMedia === 'function'
+        ? window.matchMedia('(pointer: coarse)').matches
+        : false;
+    const maxPts = typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0;
+    const vw = window.innerWidth || 1440;
+    const vh = window.innerHeight || 900;
+    return shouldAutoCollapsePerfHud({
+      coarsePointer: coarse,
+      maxTouchPoints: maxPts,
+      viewportWidth: vw,
+      viewportHeight: vh,
+    });
+  };
+
   let frameRingHead = 0;
   let frameRingCount = 0;
   let sparkHead = 0;
   let uiRefreshAcc = TEXT_REFRESH_SEC;
-  let isExpanded = true;
+  let isCompactMobile = detectCompactMobile();
+  let isExpanded = !isCompactMobile;
+  let isVisible = true;
+
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(PERF_VIS_STORAGE_KEY) === 'off') {
+      isVisible = false;
+    }
+  } catch {
+    // ignore storage errors
+  }
 
   // Enable microsecond physics & ECS combat query timing while HUD is active
   const phys = G.physics as SpatialArenaPhysics | undefined;
@@ -127,12 +172,13 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
 
   const root = document.createElement('aside');
   root.id = 'perf-hud';
+  root.className = 'perf-hud';
   root.setAttribute('aria-label', '实时性能监控面板');
   root.style.cssText = [
     'position:absolute',
     'top:calc(52px + env(safe-area-inset-top, 0px))',
     'right:max(14px, env(safe-area-inset-right, 0px))',
-    'z-index:85',
+    'z-index:33',
     'width:274px',
     'padding:8px 10px 9px',
     'background:rgba(9, 13, 18, 0.80)',
@@ -249,13 +295,40 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
     }
   }
 
+  function syncHudLayoutVisual(): void {
+    root.hidden = !isVisible;
+    root.classList.toggle('is-collapsed', !isExpanded);
+    root.classList.toggle('is-mobile', isCompactMobile);
+    body.style.display = isExpanded ? 'flex' : 'none';
+    if (isCompactMobile) {
+      root.style.width = isExpanded ? '238px' : 'auto';
+      root.style.padding = isExpanded ? '6px 8px 7px' : '4px 8px';
+      titleSpan.textContent = isExpanded ? '⚡ 性能监控 [收起]' : '⚡';
+    } else {
+      root.style.width = isExpanded ? '274px' : '168px';
+      root.style.padding = isExpanded ? '8px 10px 9px' : '5px 8px';
+      titleSpan.textContent = isExpanded ? '⚡ ECS · PERF [F3]' : '⚡ [F3]';
+    }
+  }
+
   function toggleExpanded(): void {
     isExpanded = !isExpanded;
-    body.style.display = isExpanded ? 'flex' : 'none';
-    root.style.width = isExpanded ? '274px' : '168px';
-    root.style.padding = isExpanded ? '8px 10px 9px' : '5px 8px';
-    titleSpan.textContent = isExpanded ? '⚡ ECS · PERF [F3]' : '⚡ [F3]';
+    syncHudLayoutVisual();
   }
+
+  function setVisible(nextVisible: boolean): void {
+    isVisible = Boolean(nextVisible);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(PERF_VIS_STORAGE_KEY, isVisible ? 'on' : 'off');
+      }
+    } catch {
+      // ignore storage errors
+    }
+    syncHudLayoutVisual();
+  }
+
+  syncHudLayoutVisual();
 
   function toggleSpatialAcceleration(): void {
     const next = !isSpatialActive();
@@ -418,11 +491,28 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
     }
   }
 
+  const onResize = (): void => {
+    const nextMobile = detectCompactMobile();
+    if (nextMobile !== isCompactMobile) {
+      isCompactMobile = nextMobile;
+      if (isCompactMobile) {
+        isExpanded = false;
+      }
+      syncHudLayoutVisual();
+    }
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', onResize);
+  }
+
   return {
     world,
     pipeline,
     get expanded() {
       return isExpanded;
+    },
+    get visible() {
+      return isVisible;
     },
     stepFrame(input: PerfHudPhaseInput) {
       const ecs = G.ecsCombat as EcsCombatBridge | undefined;
@@ -477,10 +567,12 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
       }
     },
     toggleExpanded,
+    setVisible,
     toggleSpatialAcceleration,
     dispose() {
       if (typeof window !== 'undefined') {
         window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('resize', onResize);
       }
       root.remove();
     },
