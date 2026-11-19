@@ -7,6 +7,7 @@
 import {
   GUNNER_ARCHETYPE_LABELS,
   HANZO_ARCHETYPE_LABELS,
+  SYNERGY_CATALOG,
   UPGRADE_CATALOG,
   addUltimateDamageCharge,
   applyGenjiEliminationReset,
@@ -78,6 +79,19 @@ import {
   type TacticalArenaController,
 } from './tacticalArenaProps.ts';
 import { createGenjiAudio, type GenjiAudioController } from './genjiAudio.ts';
+import {
+  CHALLENGE_MUTATORS,
+  DIFFICULTY_TIERS,
+  HOSTILE_CODEX_SPECS,
+  computeChallengeModifiers,
+  createCareerStore,
+  sanitizeDifficultyTier,
+  sanitizeMutatorList,
+  type CareerStore,
+  type ChallengeModifiers,
+  type ChallengeMutatorId,
+  type DifficultyTierId,
+} from './careerProgression.ts';
 import { createGenjiWeapon } from './genjiWeapon.ts';
 import { createGunnerWeapon } from './gunnerWeapon.ts';
 import { createHanzoWeapon } from './hanzoWeapon.ts';
@@ -124,6 +138,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   const THREE = G.THREE;
   const rng = createRng(+(G.params && G.params.seed ? G.params.seed : 4207) ^ 0x9e3779b9);
   const audio: GenjiAudioController = createGenjiAudio(!!(G.params && G.params.noaudio));
+  const careerStore: CareerStore = createCareerStore(G.__careerStorage);
+  audio.setBgmEnabled(careerStore.profile.bgmEnabled);
+
+  let selectedDifficulty: DifficultyTierId =
+    G.params && G.params.diff
+      ? sanitizeDifficultyTier(G.params.diff)
+      : careerStore.profile.preferredDifficulty;
+  let selectedMutators: ChallengeMutatorId[] =
+    G.params && typeof G.params.mut === 'string' && G.params.mut.length > 0
+      ? sanitizeMutatorList(G.params.mut.split(','))
+      : [...careerStore.profile.preferredMutators];
+  let challengeMods: ChallengeModifiers = computeChallengeModifiers(
+    selectedDifficulty,
+    selectedMutators
+  );
 
   // Pre-allocate & attach enemy procedural variant rigs onto the pooled actor slots at boot (Zero-GC wave spawns)
   prewarmEnemyVariantPools(G);
@@ -146,6 +175,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   let precisionBurstCd = 0;
   let gunnerSprintAmmoFrac = 0;
   let totalUpgradesPicked = 0;
+  let runBossKills = 0;
+  let runCoreInterrupts = 0;
+  let runParries = 0;
+  let runPropsTriggered = 0;
+  let runSettled = false;
 
   const catalogMap = new Map<string, GenjiUpgradeCard>();
   for (const item of UPGRADE_CATALOG) {
@@ -325,9 +359,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   });
   touchCtrl.setHeroClass(activeHero);
 
+  function computeEffectivePlayerMaxHp(): number {
+    const raw =
+      activeHero === 'gunner'
+        ? gunnerStats.maxHealth
+        : activeHero === 'hanzo'
+          ? hanzoStats.maxHealth
+          : buildStats.maxHealth;
+    return Math.max(75, Math.round(raw * challengeMods.playerMaxHpMult));
+  }
+
   function triggerParryFeedback() {
     parryStreakCount++;
     parryBannerT = 0.92;
+    runParries++;
+    careerStore.recordCombatMilestone('parry');
   }
 
   function startDragonbladeLunge(dir: any, rangeMeters: number) {
@@ -399,12 +445,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       if (G.player && G.player.alive) G.player.heal(amt);
     },
     onGrantUltCharge: (pct) => {
+      const scaledPct = pct * challengeMods.playerUltGainMult;
       if (activeHero === 'gunner') {
-        gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + pct, 0, 100);
+        gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + scaledPct, 0, 100);
       } else if (activeHero === 'hanzo') {
-        hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + pct, 0, 100);
+        hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + scaledPct, 0, 100);
       } else {
-        cdState.ultCharge = clamp(cdState.ultCharge + pct, 0, 100);
+        cdState.ultCharge = clamp(cdState.ultCharge + scaledPct, 0, 100);
       }
     },
     onUpdraftLaunch: () => {
@@ -422,15 +469,17 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       if (G.hud && typeof G.hud.feed === 'function') G.hud.feed(feedHtml);
     },
     onAudioCue: (kind) => {
-      if (kind === 'cask_boom') audio.helixExplode();
-      else if (kind === 'updraft') audio.doubleJump();
-      else audio.orbShatter();
+      runPropsTriggered++;
+      careerStore.recordCombatMilestone('prop');
+      if (kind === 'cask_boom') audio.caskDetonate();
+      else if (kind === 'updraft') audio.updraftLaunch();
+      else audio.gongRing();
     },
   });
   G.tacticalProps = tacticalProps;
 
   G.getTacticalDamageMultiplier = () => {
-    let mult = tacticalProps.getDamageMultiplier();
+    let mult = tacticalProps.getDamageMultiplier() * challengeMods.playerDamageMult;
     if (mobilityEmpowerT > 0 && synergySummary.mobilityEmpowerRatio > 0) {
       mult *= 1 + synergySummary.mobilityEmpowerRatio;
     }
@@ -700,6 +749,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         enemy.__variant === 'mortar_crab' ||
         enemy.__variant === 'shield_guard')
     );
+    if (challengeMods.vampiricKillHeal > 0 && player.alive) {
+      player.heal(challengeMods.vampiricKillHeal);
+    }
     const airborneKill = !player.onGround || agilityState.isWallClimbing;
     const skyDragonTier = synergySummary.tiers.sky_dragon;
 
@@ -718,7 +770,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         }
       } else {
         gunnerCd.ultCharge = clamp(
-          gunnerCd.ultCharge + (isBoss ? 22 : isEliteMech ? 9.5 : 7.5) * gunnerStats.ultChargeMultiplier,
+          gunnerCd.ultCharge +
+            (isBoss ? 22 : isEliteMech ? 9.5 : 7.5) *
+              gunnerStats.ultChargeMultiplier *
+              challengeMods.playerUltGainMult,
           0,
           100
         );
@@ -732,8 +787,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       hanzoCd.lungeCd = updatedH.lungeCd;
       hanzoCd.sonicCd = updatedH.sonicCd;
       hanzoCd.stormCd = updatedH.stormCd;
+      const baseUltDelta = Math.max(0, updatedH.ultCharge - hanzoCd.ultCharge);
       hanzoCd.ultCharge = clamp(
-        updatedH.ultCharge + (airborneKill && skyDragonTier > 0 ? (skyDragonTier === 2 ? 8 : 4) : 0),
+        hanzoCd.ultCharge +
+          baseUltDelta * challengeMods.playerUltGainMult +
+          (airborneKill && skyDragonTier > 0 ? (skyDragonTier === 2 ? 8 : 4) : 0),
         0,
         100
       );
@@ -749,8 +807,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     const wasOnCd = cdState.swiftCd > 0.05;
     const updated = applyGenjiEliminationReset(cdState, buildStats, isBoss);
     cdState.swiftCd = updated.swiftCd;
+    const genjiUltDelta = Math.max(0, updated.ultCharge - cdState.ultCharge);
     cdState.ultCharge = clamp(
-      updated.ultCharge +
+      cdState.ultCharge +
+        genjiUltDelta * challengeMods.playerUltGainMult +
         (airborneKill && skyDragonTier > 0 && cdState.dragonActiveT <= 0
           ? skyDragonTier === 2
             ? 9
@@ -804,6 +864,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       if (fwdDot > -0.18 || dist < 2.6) {
         _parryWorldPt.copy(player.eye).addScaledVector(player.forward, 1.35);
         audio.deflectParry();
+        triggerParryFeedback();
         genjiWeapon.onDeflectParry(_parryWorldPt);
         genjiWeapon.spawnParryBurst(_parryWorldPt, true);
         hitstopT = Math.max(hitstopT, 0.036);
@@ -833,7 +894,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     // Nullify fall damage (`fromPos === null` when `player.pos.y > seaY`)
     if (fromPos === null && player.pos.y > -1.2) return;
-    let finalDmg = amount;
+    let finalDmg = amount * challengeMods.enemyDamageMult;
     if (activeHero === 'gunner' && (gunnerCd.sprintActive || isPlayerInsideBioticField())) {
       finalDmg *= 0.75;
     }
@@ -842,12 +903,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
   player.reset = (spawn?: any) => {
     origPlayerReset(spawn);
-    player.maxHealth =
-      activeHero === 'gunner'
-        ? gunnerStats.maxHealth
-        : activeHero === 'hanzo'
-          ? hanzoStats.maxHealth
-          : buildStats.maxHealth;
+    player.maxHealth = computeEffectivePlayerMaxHp();
     player.health = player.maxHealth;
     agilityState.airJumpsLeft =
       activeHero === 'gunner'
@@ -2295,9 +2351,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   function spawnGenjiVariant(
     variant: GenjiEnemyVariant,
     pos: any,
-    hpScale: number,
+    rawHpScale: number,
     waveNum: number
   ): any {
+    const hpScale = rawHpScale * challengeMods.enemyHpMult;
     const baseType =
       variant === 'swarm' || variant === 'gull'
         ? 'gull'
@@ -2310,6 +2367,12 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     resetVariantDecor(en);
     en.__variant = variant;
+    if (typeof en.speed === 'number' && Number.isFinite(en.speed)) {
+      if (typeof en.__baseSpeed !== 'number') {
+        en.__baseSpeed = en.speed;
+      }
+      en.speed = en.__baseSpeed * challengeMods.enemySpeedMult;
+    }
 
     if (variant === 'swarm') {
       en.rig.group.scale.setScalar(0.76);
@@ -2378,6 +2441,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         const bypassOnce = !!en.__bypassShieldOnce || guardBroken;
         en.__bypassShieldOnce = false;
         if (part === 'dragonblade') {
+          if ((en.__guardBrokenT || 0) <= 0) audio.guardBreak();
           en.__guardBrokenT = Math.max(en.__guardBrokenT || 0, 1.5);
         }
         const scaledAmt = guardBroken ? Math.round(rawAmt * 1.45) : rawAmt;
@@ -2413,7 +2477,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     } else if (variant === 'boss') {
       en.rig.group.scale.setScalar(1.86);
       en.__hitR2 = 8.4;
-      en.hp = Math.round(820 + waveNum * 175);
+      en.hp = Math.round((820 + waveNum * 175) * challengeMods.enemyHpMult);
       en.__maxHp = en.hp;
       en.__bossTimer = 1.35;
       en.__bossPattern = 0;
@@ -3282,6 +3346,17 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   function spawnColossalBoss(waveNum: number, nearPlayer = false) {
     if (colossusState && colossusState.hp > 0) return;
     colossusState = createColossalBossState(Math.max(1, waveNum));
+    if (challengeMods.enemyHpMult !== 1.0) {
+      colossusState.maxHp = Math.round(colossusState.maxHp * challengeMods.enemyHpMult);
+      colossusState.hp = colossusState.maxHp;
+      colossusState.orbMaxHp = Math.round(colossusState.orbMaxHp * challengeMods.enemyHpMult);
+      for (let i = 0; i < colossusState.orbHp.length; i++) {
+        colossusState.orbHp[i] = colossusState.orbMaxHp;
+      }
+      if (colossusState.coreMaxHp) {
+        colossusState.coreMaxHp = Math.round(colossusState.coreMaxHp * challengeMods.enemyHpMult);
+      }
+    }
     colossusDeathT = 0;
     colossusHitFlashT = 0;
     colossusSlamFired = false;
@@ -3457,7 +3532,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       colTelegraphMesh.visible = false;
       colThunderRingsInst.visible = false;
       colChestCrest.scale.set(1.1, 1.35, 0.45);
-      audio.orbShatter();
+      audio.coreInterrupt();
+      runCoreInterrupts++;
+      careerStore.recordCombatMilestone('core_interrupt');
       genjiWeapon.spawnParryBurst(hitPoint, true);
       combatVfx.triggerImpact({
         point: hitPoint,
@@ -3525,6 +3602,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       colThunderRingsInst.visible = false;
       audio.colossusRoar();
       audio.orbShatter();
+      runBossKills++;
+      careerStore.recordHostileDefeat('colossus');
       player.heal(80);
       cdState.swiftCd = 0;
       hanzoCd.lungeCd = 0;
@@ -3970,7 +4049,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
               const ty = G.physics.groundHeight(tx, tz, player.pos.y + 2.5);
               colThunderTargets[r].set(tx, Number.isFinite(ty) ? Math.max(0, ty) : player.pos.y, tz);
             }
-            audio.colossusRoar();
+            audio.thunderWarning();
             G.hud.warn('荒神咏唱【雷神天罚】· 速击胸口雷核破招！', 1.8);
           } else if (cycle === 0) {
             colossusState.activeAttack = 'odachi_slam';
@@ -3996,6 +4075,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (en && en.__laserMesh) en.__laserMesh.visible = false;
     handleEnemyEliminated(en);
     runStats.kills++;
+    const killedVar =
+      en && en.__variant && en.__variant !== 'normal'
+        ? String(en.__variant)
+        : en && en.type
+          ? String(en.type)
+          : 'trooper';
+    if (killedVar === 'boss') {
+      runBossKills++;
+    }
+    careerStore.recordHostileDefeat(killedVar);
     const feedLabel =
       en && en.__variant === 'boss'
         ? '赤备重甲统领'
@@ -4249,10 +4338,15 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
   function renderBuildStrip() {
     const entries = Object.entries(upgradeStacks).filter(([, c]) => c > 0);
-    if (!entries.length) {
+    const hasCustomChallenge =
+      challengeMods.difficulty !== 'normal' || challengeMods.mutators.length > 0;
+    if (!entries.length && !hasCustomChallenge) {
       buildStripEl.innerHTML = '';
       return;
     }
+    const chalHtml = hasCustomChallenge
+      ? `<span class="g-chip g-chip-chal" title="武勋倍率 ×${challengeMods.scoreMultiplier.toFixed(2)}">⚔ ${challengeMods.bannerTag}</span>`
+      : '';
     const synHtml = synergySummary.active
       .map(
         (syn) =>
@@ -4268,7 +4362,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         return `<span class="g-chip" data-arch="${arch}">${title}${count > 1 ? ` ×${count}` : ''}</span>`;
       })
       .join('');
-    buildStripEl.innerHTML = synHtml + chipsHtml;
+    buildStripEl.innerHTML = chalHtml + synHtml + chipsHtml;
   }
 
   function openUpgradeDraft(subtitle: string, guaranteedRare = false) {
@@ -4349,24 +4443,26 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     gunnerStats = computeGunnerBuildStats(upgradeStacks);
     hanzoStats = computeHanzoBuildStats(upgradeStacks);
     synergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
-    player.maxHealth =
-      activeHero === 'gunner'
-        ? gunnerStats.maxHealth
-        : activeHero === 'hanzo'
-          ? hanzoStats.maxHealth
-          : buildStats.maxHealth;
+    careerStore.recordTalentPick(picked.id);
+    careerStore.recordSynergies(synergySummary.tiers);
+
+    player.maxHealth = computeEffectivePlayerMaxHp();
     if (player.maxHealth > prevMaxHp) {
       player.heal(player.maxHealth - prevMaxHp);
     }
     genjiWeapon.ammo = buildStats.magSize;
     gunnerWeapon.ammo = gunnerStats.magSize;
     hanzoLungeChargesLeft = hanzoStats.maxAirJumps;
-    audio.upgradePick();
-    if (synPrev && G.hud && typeof G.hud.feed === 'function') {
-      const matched = synergySummary.active.find((s) => s.id === synPrev.synergyId);
-      G.hud.feed(
-        `<b>✦ ${synPrev.badgeLabel}</b><em>${matched ? matched.description : '跨流派秘契已激活'}</em>`
-      );
+    if (synPrev) {
+      audio.synergyAwaken(synPrev.nextTier);
+      if (G.hud && typeof G.hud.feed === 'function') {
+        const matched = synergySummary.active.find((s) => s.id === synPrev.synergyId);
+        G.hud.feed(
+          `<b>✦ ${synPrev.badgeLabel}</b><em>${matched ? matched.description : '跨流派秘契已激活'}</em>`
+        );
+      }
+    } else {
+      audio.upgradePick();
     }
     renderBuildStrip();
 
@@ -4443,12 +4539,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     if (player) {
       const hpRatio = player.maxHealth > 0 ? clamp01(player.health / player.maxHealth) : 1;
-      player.maxHealth =
-        activeHero === 'gunner'
-          ? gunnerStats.maxHealth
-          : activeHero === 'hanzo'
-            ? hanzoStats.maxHealth
-            : buildStats.maxHealth;
+      player.maxHealth = computeEffectivePlayerMaxHp();
       player.health = Math.max(1, Math.round(player.maxHealth * hpRatio));
     }
 
@@ -5003,7 +5094,12 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     selectHero(h: string) {
       if (h === 'genji' || h === 'hanzo' || h === 'gunner') {
         setHeroClass(h, false);
+        renderCodexPane();
       }
+    },
+    codex() {
+      audio.resume();
+      openCodexPanel();
     },
     deploy() {
       audio.resume();
@@ -5044,10 +5140,20 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   menus.applySettings();
   currentDynamicFov = menus.settings ? menus.settings.fov : 75;
 
-  // Add Touch Controls Preference, Touch Sensitivity & Mobile Aim Assist inside Settings Panel
+  // Add BGM Toggle, Touch Controls Preference, Touch Sensitivity & Mobile Aim Assist inside Settings Panel
   const settingsPane = menus.root.querySelector('[data-pane="settings"]');
   if (settingsPane) {
     const touchFrag = document.createDocumentFragment();
+
+    const bgmRow = document.createElement('div');
+    bgmRow.className = 'row';
+    bgmRow.innerHTML = `
+      <label id="l-wafu-bgm">和风动态战曲</label>
+      <div class="seg" role="group" aria-labelledby="l-wafu-bgm">
+        <button type="button" data-bgm="on">开启</button>
+        <button type="button" data-bgm="off">关闭</button>
+      </div>
+    `;
 
     const touchRow = document.createElement('div');
     touchRow.className = 'row';
@@ -5081,12 +5187,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       </div>
     `;
 
-    touchFrag.append(touchRow, touchSensRow, touchAssistRow);
+    touchFrag.append(bgmRow, touchRow, touchSensRow, touchAssistRow);
     const firstNote = settingsPane.querySelector('.panel-note');
     if (firstNote) settingsPane.insertBefore(touchFrag, firstNote);
     else settingsPane.appendChild(touchFrag);
 
     const syncTouchSeg = () => {
+      bgmRow.querySelectorAll<HTMLButtonElement>('button[data-bgm]').forEach((b) => {
+        const wantOn = b.dataset.bgm === 'on';
+        b.setAttribute('aria-pressed', String(wantOn === audio.getBgmEnabled()));
+      });
       touchRow.querySelectorAll<HTMLButtonElement>('button[data-tpref]').forEach((b) => {
         b.setAttribute('aria-pressed', String(b.dataset.tpref === touchCtrl.preference));
       });
@@ -5095,6 +5205,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         b.setAttribute('aria-pressed', String(wantOn === touchCtrl.aimAssistEnabled));
       });
     };
+    bgmRow.querySelectorAll<HTMLButtonElement>('button[data-bgm]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const nextOn = b.dataset.bgm === 'on';
+        audio.setBgmEnabled(nextOn);
+        careerStore.setBgmEnabled(nextOn);
+        syncTouchSeg();
+      });
+    });
     touchRow.querySelectorAll<HTMLButtonElement>('button[data-tpref]').forEach((b) => {
       b.addEventListener('click', () => {
         const pref = (b.dataset.tpref || 'auto') as TouchUiPreference;
@@ -5118,6 +5236,303 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       });
     }
     syncTouchSeg();
+  }
+
+  // =========================================================================
+  // PHASE 4: TITLE CAREER BANNER, SHURA CHALLENGE BAR & CODEX PANEL
+  // =========================================================================
+  let careerBannerEl: HTMLElement | null = null;
+  let challengeBoxEl: HTMLElement | null = null;
+  let challengeDescEl: HTMLElement | null = null;
+  let challengeMultEl: HTMLElement | null = null;
+  let codexPaneEl: HTMLElement | null = null;
+  let codexTabBtn: HTMLButtonElement | null = null;
+  let deadSummaryEl: HTMLElement | null = null;
+
+  function setChallengeSelection(
+    nextDiff: DifficultyTierId,
+    nextMutators: ChallengeMutatorId[]
+  ) {
+    selectedDifficulty = sanitizeDifficultyTier(nextDiff);
+    selectedMutators = sanitizeMutatorList(nextMutators);
+    challengeMods = computeChallengeModifiers(selectedDifficulty, selectedMutators);
+    careerStore.setChallengeSelection(selectedDifficulty, selectedMutators);
+    syncChallengeUi();
+    renderBuildStrip();
+  }
+
+  function renderCareerBanner() {
+    if (!careerBannerEl) return;
+    const prof = careerStore.profile;
+    const rank = careerStore.getRankInfo();
+    const codex = careerStore.getCodexProgress();
+    careerBannerEl.innerHTML = `
+      <span class="m-cb-rank"><b>✦ ${rank.title}</b><em>武勋 ${prof.honorPoints}</em></span>
+      <span class="m-cb-sep">·</span>
+      <span>最高第 <b>${prof.highestWave}</b> 波</span>
+      <span class="m-cb-sep">·</span>
+      <span>累计 <b>${prof.totalKills}</b> 斩</span>
+      <span class="m-cb-sep">·</span>
+      <span>秘传图鉴 <b>${codex.totalUnlocked}/${codex.totalEntries}</b> (${codex.completionPct}%)</span>
+    `;
+  }
+
+  function syncChallengeUi(hoverHint?: string) {
+    if (!challengeBoxEl) return;
+    challengeBoxEl.querySelectorAll<HTMLButtonElement>('button[data-diff]').forEach((btn) => {
+      const on = btn.dataset.diff === selectedDifficulty;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', String(on));
+    });
+    challengeBoxEl.querySelectorAll<HTMLButtonElement>('button[data-mut]').forEach((btn) => {
+      const id = btn.dataset.mut as ChallengeMutatorId;
+      const on = selectedMutators.includes(id);
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', String(on));
+    });
+    if (challengeMultEl) {
+      challengeMultEl.textContent = `武勋倍率 ×${challengeMods.scoreMultiplier.toFixed(2)}`;
+    }
+    if (challengeDescEl) {
+      if (hoverHint) {
+        challengeDescEl.textContent = hoverHint;
+      } else {
+        const tierSpec =
+          DIFFICULTY_TIERS.find((t) => t.id === selectedDifficulty) || DIFFICULTY_TIERS[0];
+        if (selectedMutators.length === 0) {
+          challengeDescEl.textContent = tierSpec.subtitle;
+        } else {
+          const mutNames = selectedMutators
+            .map((m) => CHALLENGE_MUTATORS.find((x) => x.id === m)?.title || m)
+            .join(' + ');
+          challengeDescEl.textContent = `${tierSpec.shortLabel}试炼 · 已启用词缀：${mutNames}`;
+        }
+      }
+    }
+  }
+
+  function renderCodexPane() {
+    if (!codexPaneEl) return;
+    const prof = careerStore.profile;
+    const rank = careerStore.getRankInfo();
+    const codex = careerStore.getCodexProgress();
+
+    const heroNames: Record<HeroClassId, string> = {
+      genji: '岛田源氏 · 龙刃',
+      hanzo: '岛田半藏 · 岚弓',
+      gunner: '神机统帅 · 枪兵',
+    };
+
+    const heroCardsHtml = (['genji', 'hanzo', 'gunner'] as HeroClassId[])
+      .map((hid) => {
+        const hs = prof.heroStats[hid];
+        return `
+          <div class="m-cx-hero" data-cx-hero="${hid}">
+            <b>${heroNames[hid]}</b>
+            <span>最高第 ${hs.bestWave} 波 · 累计 ${hs.kills} 斩 · 出击 ${hs.runs} 局</span>
+          </div>
+        `;
+      })
+      .join('');
+
+    const synHtml = SYNERGY_CATALOG.map((syn) => {
+      const unlockedTier = prof.unlockedSynergies[syn.id] || 0;
+      const copy =
+        activeHero === 'gunner' ? syn.gunner : activeHero === 'hanzo' ? syn.hanzo : syn.genji;
+      const tierBadge = unlockedTier === 2 ? '阶 II 已极意' : unlockedTier === 1 ? '阶 I 已觉醒' : '未解锁';
+      return `
+        <div class="m-cx-item ${unlockedTier > 0 ? 'is-on' : 'is-locked'}">
+          <div class="m-cx-itop">
+            <b>${unlockedTier > 0 ? copy.title : '？？？· 未知双生秘契'}</b>
+            <em>${tierBadge}</em>
+          </div>
+          <p>${unlockedTier >= 2 ? copy.tier2Desc : unlockedTier === 1 ? copy.tier1Desc : '在单局内同时修习对应双流派潜能即可唤醒共鸣'}</p>
+        </div>
+      `;
+    }).join('');
+
+    const talentPillsHtml = UPGRADE_CATALOG.map((card) => {
+      const picks = prof.unlockedTalents[card.id] || 0;
+      const resolved = resolveUpgradeCardForHero(card, activeHero);
+      return `<span class="m-cx-pill ${picks > 0 ? 'is-on' : ''}" title="${picks > 0 ? `${resolved.description}（已参悟 ${picks} 次）` : '尚未在战局中参悟'}">${picks > 0 ? resolved.title : '未参悟秘卷'}</span>`;
+    }).join('');
+
+    const hostilePillsHtml = HOSTILE_CODEX_SPECS.map((h) => {
+      const count = prof.defeatedHostiles[h.id] || 0;
+      return `<span class="m-cx-pill ${count > 0 ? 'is-on' : ''}" title="${h.role}">${count > 0 ? `${h.name} ×${count}` : '未知机关'}</span>`;
+    }).join('');
+
+    const recentHtml = prof.recentRuns.length
+      ? prof.recentRuns
+          .slice(0, 4)
+          .map((r) => {
+            const diffLbl = DIFFICULTY_TIERS.find((d) => d.id === r.difficulty)?.shortLabel || '初阵';
+            return `<div class="m-cx-run"><b>${heroNames[r.hero].split(' · ')[0]} · ${diffLbl}</b><span>第 ${r.wave} 波 · ${r.kills} 斩 · 得分 ${r.score} · +${r.honorGain} 武勋</span></div>`;
+          })
+          .join('')
+      : '<div class="m-cx-empty">尚无战局记录，出击迎战花村机关军团即可载入武道战史！</div>';
+
+    codexPaneEl.innerHTML = `
+      <div class="m-cx-rankbar">
+        <div class="m-cx-rhead">
+          <b>段位：${rank.title}</b>
+          <span>武勋 ${rank.currentHonor}${rank.nextThreshold ? ` / ${rank.nextThreshold}（下一阶：${rank.nextTitle}）` : '（已登峰造极）'}</span>
+        </div>
+        <div class="m-cx-rtrack"><i style="width:${Math.round(rank.progressRatio * 100)}%"></i></div>
+        <div class="m-cx-kpis">
+          <span>最高波次 <b>${prof.highestWave}</b></span>
+          <span>最高得分 <b>${prof.highestScore}</b></span>
+          <span>讨伐首领 <b>${prof.bossesDefeated}</b></span>
+          <span>雷核破招 <b>${prof.coreInterrupts}</b></span>
+          <span>心眼弹反 <b>${prof.parryCount}</b></span>
+          <span>图鉴收集 <b>${codex.totalUnlocked}/${codex.totalEntries}</b></span>
+        </div>
+      </div>
+
+      <h3>三英雄武道熟练度</h3>
+      <div class="m-cx-heroes">${heroCardsHtml}</div>
+
+      <h3>双生流派羁绊录（${codex.synergiesUnlocked}/${codex.synergiesTotal} · 当前预览：${heroNames[activeHero].split(' · ')[0]}）</h3>
+      <div class="m-cx-grid">${synHtml}</div>
+
+      <h3>秘传潜能图鉴（${codex.talentsUnlocked}/${codex.talentsTotal}）</h3>
+      <div class="m-cx-pills">${talentPillsHtml}</div>
+
+      <h3>花村机关妖将录（${codex.hostilesUnlocked}/${codex.hostilesTotal}）</h3>
+      <div class="m-cx-pills">${hostilePillsHtml}</div>
+
+      <h3>近期讨伐战史</h3>
+      <div class="m-cx-runs">${recentHtml}</div>
+    `;
+  }
+
+  function openCodexPanel() {
+    renderCodexPane();
+    const panelEl = menus.root.querySelector('.panel') as HTMLElement | null;
+    if (!panelEl || !codexTabBtn) return;
+    panelEl.hidden = false;
+    menus.root.classList.add('panel-open');
+    codexTabBtn.click();
+  }
+
+  // Inject Title Career Banner, Challenge Bar, Codex Buttons & Panel Tab into `menus.root`
+  const titleMainEl = menus.root.querySelector('.m-title-main') as HTMLElement | null;
+  const heroPickerEl = menus.root.querySelector('.m-hero-picker') as HTMLElement | null;
+  const titleActionsEl = menus.root.querySelector('.m-title .m-actions') as HTMLElement | null;
+  const pauseActionsEl = menus.root.querySelector('[data-s="paused"] .m-actions') as HTMLElement | null;
+  const panelEl = menus.root.querySelector('.panel') as HTMLElement | null;
+  const panelTabsEl = menus.root.querySelector('.panel .tabs') as HTMLElement | null;
+  const deadScreenEl = menus.root.querySelector('[data-s="dead"]') as HTMLElement | null;
+
+  if (titleMainEl && heroPickerEl) {
+    careerBannerEl = document.createElement('div');
+    careerBannerEl.className = 'm-career-bar';
+    careerBannerEl.setAttribute('aria-label', '武道生涯档案概览');
+    titleMainEl.insertBefore(careerBannerEl, heroPickerEl);
+    renderCareerBanner();
+
+    challengeBoxEl = document.createElement('div');
+    challengeBoxEl.className = 'm-challenge-box';
+    challengeBoxEl.setAttribute('aria-label', '试炼难度与修罗词缀');
+    challengeBoxEl.innerHTML = `
+      <div class="m-ch-row">
+        <span class="m-ch-lbl">试炼难度</span>
+        <div class="m-ch-diffs" role="radiogroup" aria-label="选择试炼难度">
+          ${DIFFICULTY_TIERS.map(
+            (t) =>
+              `<button type="button" class="m-ch-btn" data-diff="${t.id}" aria-pressed="false">${t.label}</button>`
+          ).join('')}
+        </div>
+        <b class="m-ch-mult">武勋倍率 ×1.00</b>
+      </div>
+      <div class="m-ch-row">
+        <span class="m-ch-lbl">修罗词缀</span>
+        <div class="m-ch-muts" role="group" aria-label="启用修罗试炼词缀">
+          ${CHALLENGE_MUTATORS.map(
+            (m) =>
+              `<button type="button" class="m-ch-mut" data-mut="${m.id}" aria-pressed="false" title="${m.description}">${m.title}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <p class="m-ch-desc"></p>
+    `;
+    heroPickerEl.insertAdjacentElement('afterend', challengeBoxEl);
+    challengeDescEl = challengeBoxEl.querySelector('.m-ch-desc');
+    challengeMultEl = challengeBoxEl.querySelector('.m-ch-mult');
+
+    challengeBoxEl.querySelectorAll<HTMLButtonElement>('button[data-diff]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const d = (btn.dataset.diff || 'normal') as DifficultyTierId;
+        setChallengeSelection(d, selectedMutators);
+      });
+    });
+    challengeBoxEl.querySelectorAll<HTMLButtonElement>('button[data-mut]').forEach((btn) => {
+      const mId = btn.dataset.mut as ChallengeMutatorId;
+      const spec = CHALLENGE_MUTATORS.find((x) => x.id === mId);
+      btn.addEventListener('mouseenter', () => {
+        if (spec) syncChallengeUi(`${spec.title}：${spec.description}`);
+      });
+      btn.addEventListener('mouseleave', () => syncChallengeUi());
+      btn.addEventListener('click', () => {
+        const exists = selectedMutators.includes(mId);
+        const next = exists
+          ? selectedMutators.filter((x) => x !== mId)
+          : [...selectedMutators, mId];
+        setChallengeSelection(selectedDifficulty, next);
+      });
+    });
+    syncChallengeUi();
+  }
+
+  if (titleActionsEl) {
+    const codexBtn = document.createElement('button');
+    codexBtn.type = 'button';
+    codexBtn.className = 'btn';
+    codexBtn.dataset.act = 'codex';
+    codexBtn.textContent = '生涯与图鉴';
+    const deployBtn = titleActionsEl.querySelector('[data-act="deploy"]');
+    if (deployBtn && deployBtn.nextSibling) {
+      titleActionsEl.insertBefore(codexBtn, deployBtn.nextSibling);
+    } else {
+      titleActionsEl.appendChild(codexBtn);
+    }
+  }
+
+  if (pauseActionsEl) {
+    const pCodexBtn = document.createElement('button');
+    pCodexBtn.type = 'button';
+    pCodexBtn.className = 'btn';
+    pCodexBtn.dataset.act = 'codex';
+    pCodexBtn.textContent = '生涯与图鉴';
+    pauseActionsEl.appendChild(pCodexBtn);
+  }
+
+  if (panelEl && panelTabsEl) {
+    codexTabBtn = document.createElement('button');
+    codexTabBtn.type = 'button';
+    codexTabBtn.className = 'tab';
+    codexTabBtn.setAttribute('role', 'tab');
+    codexTabBtn.dataset.tab = 'codex';
+    codexTabBtn.setAttribute('aria-selected', 'false');
+    codexTabBtn.textContent = '生涯与图鉴';
+    codexTabBtn.addEventListener('click', () => renderCodexPane());
+    panelTabsEl.appendChild(codexTabBtn);
+
+    codexPaneEl = document.createElement('div');
+    codexPaneEl.className = 'panel-b m-codex-pane';
+    codexPaneEl.dataset.pane = 'codex';
+    codexPaneEl.hidden = true;
+    panelEl.appendChild(codexPaneEl);
+    renderCodexPane();
+  }
+
+  if (deadScreenEl) {
+    deadSummaryEl = document.createElement('div');
+    deadSummaryEl.className = 'm-dead-summary';
+    const deadStatsDl = deadScreenEl.querySelector('.m-stats');
+    if (deadStatsDl) {
+      deadStatsDl.insertAdjacentElement('afterend', deadSummaryEl);
+    }
   }
 
   const volSlider = menus.root.querySelector('#s-vol') as HTMLInputElement | null;
@@ -5293,12 +5708,30 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
   }
 
-  function startNewRun(opts: { skipIntro?: boolean; quick?: boolean } = {}) {
+  function startNewRun(
+    opts: {
+      skipIntro?: boolean;
+      quick?: boolean;
+      difficulty?: DifficultyTierId;
+      mutators?: ChallengeMutatorId[];
+    } = {}
+  ) {
+    if (opts.difficulty !== undefined || opts.mutators !== undefined) {
+      setChallengeSelection(
+        opts.difficulty ?? selectedDifficulty,
+        opts.mutators ?? selectedMutators
+      );
+    }
     upgradeOpen = false;
     upgradeModal.hidden = true;
     pendingDraftCount = 0;
     upgradeStacks = {};
     totalUpgradesPicked = 0;
+    runBossKills = 0;
+    runCoreInterrupts = 0;
+    runParries = 0;
+    runPropsTriggered = 0;
+    runSettled = false;
     buildStats = createBaseGenjiStats();
     gunnerStats = createBaseGunnerStats();
     hanzoStats = createBaseHanzoStats();
@@ -5359,6 +5792,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     hitstopT = 0;
     fovKick = 0;
     tacticalProps.reset();
+    tacticalProps.setModifiers({
+      cooldownScale: challengeMods.propCooldownScale,
+      damageMult: challengeMods.propDamageMult,
+    });
     combatVfx.reset();
     for (const sp of deflectSpears) sp.active = false;
     deflectOuterInst.count = 0;
@@ -5366,12 +5803,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     G.enemies.clear();
     G.combat.reset();
-    player.maxHealth =
-      activeHero === 'gunner'
-        ? gunnerStats.maxHealth
-        : activeHero === 'hanzo'
-          ? hanzoStats.maxHealth
-          : buildStats.maxHealth;
+    player.maxHealth = computeEffectivePlayerMaxHp();
     player.reset(G.level.playerStart);
     genjiWeapon.reset();
     gunnerWeapon.reset();
@@ -5439,11 +5871,57 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     G.audio && G.audio.setPaused && G.audio.setPaused(false);
   }
 
+  function settleCurrentRun() {
+    if (runSettled) return null;
+    runSettled = true;
+    const cStats = G.combat && G.combat.stats ? G.combat.stats : { shots: 0, hits: 0 };
+    const outcome = careerStore.recordRunCompleted({
+      hero: activeHero,
+      difficulty: challengeMods.difficulty,
+      mutators: challengeMods.mutators,
+      wave: Math.max(1, runStats.wave),
+      kills: runStats.kills,
+      durationSec: runStats.time,
+      shots: cStats.shots || 0,
+      hits: cStats.hits || 0,
+      bossKills: runBossKills,
+      coreInterrupts: runCoreInterrupts,
+      parries: runParries,
+      propsTriggered: runPropsTriggered,
+      synergyCount: synergySummary.active.length,
+      scoreMultiplier: challengeMods.scoreMultiplier,
+    });
+    if (outcome.rankUp || outcome.isNewBestWave) {
+      audio.rankUp();
+    }
+    renderCareerBanner();
+    renderCodexPane();
+    if (deadSummaryEl) {
+      const recordTag = outcome.isNewBestWave
+        ? '<span class="m-ds-rec">★ 新最高波次纪录！</span>'
+        : outcome.rankUp
+          ? `<span class="m-ds-rec">★ 段位晋升：${outcome.nextRank.title}！</span>`
+          : '';
+      deadSummaryEl.innerHTML = `
+        <div class="m-ds-head">
+          <b>${outcome.scoreSummary.rating}</b>
+          ${recordTag}
+        </div>
+        <div class="m-ds-row">
+          <span>讨伐总分 <b>${outcome.scoreSummary.finalScore}</b>（×${challengeMods.scoreMultiplier.toFixed(2)}）</span>
+          <span>获赐武勋 <b>+${outcome.scoreSummary.honorGain}</b>（段位：${outcome.nextRank.title}）</span>
+        </div>
+      `;
+    }
+    return outcome;
+  }
+
   G.events.on('player:dead', () => {
     if (gameApi.state === 'dead') return;
     clearVillageShrineEvent();
     flushWorldProjectiles();
     setGameState('dead');
+    audio.setSoundscapeState('silent', 0);
     player.enabled = false;
     touchCtrl.setGameplayVisible(false);
     G.input.setGameplay && G.input.setGameplay(false);
@@ -5457,6 +5935,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (deadRelaysEl) {
       deadRelaysEl.textContent = `第 ${runStats.wave} 波 · ${runStats.kills} 斩 · ${totalUpgradesPicked} 卷忍法`;
     }
+    settleCurrentRun();
   });
 
   function updateVillageShrineInteraction(dt: number) {
@@ -5568,6 +6047,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     stateTime += dt;
 
     if (gameApi.state === 'title') {
+      audio.setSoundscapeState('title', 0.35);
+      audio.stepSoundscape(dt);
       camTour.t += dt * 0.036;
       const n = camTour.pos.length;
       const u = (camTour.t % 1) * (n - 1);
@@ -5587,6 +6068,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
 
     if (gameApi.state === 'paused') {
+      audio.setSoundscapeState('silent', 0);
       if (stateTime > 0.15 && G.input.pressed('pause')) {
         if (!menus.closePanel()) resumeFromPause(false);
       }
@@ -5595,6 +6077,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
 
     if (gameApi.state === 'dead') {
+      audio.setSoundscapeState('silent', 0);
       if (G.render && G.render.post) {
         G.render.post.saturation = damp(G.render.post.saturation ?? 1, 0.15, 2.2, dt);
         G.render.post.fade = damp(G.render.post.fade || 0, 0.52, 1.4, dt);
@@ -5607,6 +6090,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
 
     if (upgradeOpen) {
+      audio.setSoundscapeState('silent', 0);
       syncGenjiHud();
       abilityPressed.clear();
       return false;
@@ -5671,7 +6155,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (cdState.dragonActiveT > 0) {
       cdState.dragonActiveT = Math.max(0, cdState.dragonActiveT - dt);
     } else {
-      cdState.ultCharge = clamp(cdState.ultCharge + dt * 1.65 * buildStats.ultChargeMultiplier, 0, 100);
+      cdState.ultCharge = clamp(
+        cdState.ultCharge + dt * 1.65 * buildStats.ultChargeMultiplier * challengeMods.playerUltGainMult,
+        0,
+        100
+      );
     }
 
     gunnerCd.helixCd = Math.max(0, gunnerCd.helixCd - dt);
@@ -5690,7 +6178,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (gunnerCd.visorActiveT > 0) {
       gunnerCd.visorActiveT = Math.max(0, gunnerCd.visorActiveT - dt);
     } else {
-      gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + dt * 1.65 * gunnerStats.ultChargeMultiplier, 0, 100);
+      gunnerCd.ultCharge = clamp(
+        gunnerCd.ultCharge + dt * 1.65 * gunnerStats.ultChargeMultiplier * challengeMods.playerUltGainMult,
+        0,
+        100
+      );
     }
 
     hanzoCd.sonicCd = Math.max(0, hanzoCd.sonicCd - dt);
@@ -5705,7 +6197,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (hanzoCd.dragonActiveT > 0) {
       hanzoCd.dragonActiveT = Math.max(0, hanzoCd.dragonActiveT - dt);
     } else {
-      hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + dt * 1.65 * hanzoStats.ultChargeMultiplier, 0, 100);
+      hanzoCd.ultCharge = clamp(
+        hanzoCd.ultCharge + dt * 1.65 * hanzoStats.ultChargeMultiplier * challengeMods.playerUltGainMult,
+        0,
+        100
+      );
     }
 
     dashGraceT = Math.max(0, dashGraceT - dt);
@@ -5747,7 +6243,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (spawnQueue.length > 0 && aliveNow < currentWavePlan.maxConcurrent) {
       spawnTimer -= dt;
       if (spawnTimer <= 0) {
-        spawnTimer = 0.52;
+        spawnTimer = 0.52 * challengeMods.spawnIntervalScale;
         const nextVar = spawnQueue.shift()!;
         const pt = pickSpawnPointForVariant(nextVar);
         spawnGenjiVariant(nextVar, pt, currentWavePlan.hpScale, runStats.wave);
@@ -5773,10 +6269,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
 
     // Wave Clear -> Heal + Open 3-Choice Tactical Draft!
+    const waveHealAmount = Math.max(10, Math.round(45 * challengeMods.waveHealMult));
     if (spawnQueue.length === 0 && aliveNow === 0 && colossusCount === 0 && colossusDeathT <= 0 && player.alive) {
       if (waveClearDelay < 0) {
         waveClearDelay = 0.95;
-        player.heal(45);
+        player.heal(waveHealAmount);
         genjiWeapon.ammo = buildStats.magSize;
         gunnerWeapon.ammo = gunnerStats.magSize;
         G.hud.message(`第 ${runStats.wave} 波肃清 · 准备选择战术强化`, 1.1);
@@ -5788,7 +6285,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           openUpgradeDraft(
             isSpecial
               ? `第 ${runStats.wave} 波首领讨伐成功 · 必出秘传/奥义强化（已恢复生命）`
-              : `第 ${runStats.wave} 波肃清 · 用时 ${formatTime(runStats.time)} · 已恢复 45 生命`,
+              : `第 ${runStats.wave} 波肃清 · 用时 ${formatTime(runStats.time)} · 已恢复 ${waveHealAmount} 生命`,
             isSpecial || pendingGuaranteedRare
           );
           pendingGuaranteedRare = false;
@@ -5796,16 +6293,23 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       }
     }
 
+    const isBossActive =
+      colossusCount > 0 || !!(activeBoss && activeBoss.alive) || currentWavePlan.isBossWave;
     const wantIntensity =
       cdState.dragonActiveT > 0 ||
       gunnerCd.visorActiveT > 0 ||
       hanzoCd.dragonActiveT > 0 ||
-      currentWavePlan.isBossWave
+      isBossActive
         ? 1
         : aliveNow > 0
           ? 0.65
           : 0.2;
     G.audio && G.audio.setIntensity && G.audio.setIntensity(wantIntensity);
+    audio.setSoundscapeState(
+      isBossActive ? 'boss' : aliveNow > 0 || spawnQueue.length > 0 ? 'combat' : 'calm',
+      wantIntensity
+    );
+    audio.stepSoundscape(dt);
 
     syncGenjiHud();
     return true;
@@ -5817,6 +6321,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     state: 'title',
     run: runStats,
     menus,
+    audio,
+    career: careerStore,
     cdState,
     gunnerCd,
     hanzoCd,
@@ -5826,6 +6332,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     hanzoWeapon,
     combatVfx,
     tacticalProps,
+    get challenge() {
+      return challengeMods;
+    },
+    setChallenge(diff: DifficultyTierId, mutators: ChallengeMutatorId[] = []) {
+      setChallengeSelection(diff, mutators);
+    },
+    openCodex: openCodexPanel,
     get synergies() {
       return synergySummary;
     },
@@ -5852,7 +6365,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     get upgradeOpen() {
       return upgradeOpen;
     },
-    start(opts: { skipIntro?: boolean; quick?: boolean } = {}) {
+    start(
+      opts: {
+        skipIntro?: boolean;
+        quick?: boolean;
+        difficulty?: DifficultyTierId;
+        mutators?: ChallengeMutatorId[];
+      } = {}
+    ) {
       startNewRun(opts);
     },
     pause: pauseGame,
@@ -5883,6 +6403,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     chooseUpgradeForTest(idx: number) {
       chooseUpgrade(idx);
     },
+    settleRunForTest() {
+      return settleCurrentRun();
+    },
     getDiagnostics() {
       return {
         genjiBlade: genjiWeapon.getBladeDiagnostics(),
@@ -5891,6 +6414,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         combatBatching: combatVfx.sampleTelemetry(),
         tacticalProps: tacticalProps.getDiagnostics(),
         synergies: synergySummary,
+        audio: audio.getDiagnostics(),
+        careerRank: careerStore.getRankInfo(),
+        codex: careerStore.getCodexProgress(),
+        challenge: challengeMods,
       };
     },
     getActiveProjectileStats() {
