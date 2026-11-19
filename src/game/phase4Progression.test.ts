@@ -16,6 +16,7 @@ import {
 import { SYNERGY_CATALOG, UPGRADE_CATALOG, type SynergyPairId, type SynergyTier } from './roguelike.ts';
 import { createGenjiAudio } from './genjiAudio.ts';
 import { installGenjiRoguelikeMode } from './genjiMode.ts';
+import { createPerfHud, shouldAutoCollapsePerfHud } from './perfHud.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -355,7 +356,10 @@ test('Phase 4: Integrated GenjiRoguelikeMode wires Title Challenge UI, Codex Tab
     },
     hud: {
       root: hudRoot,
-      show() {},
+      visible: false,
+      show(v: boolean) {
+        this.visible = Boolean(v);
+      },
       reset() {},
       setObjective() {},
       setRelays() {},
@@ -450,6 +454,7 @@ test('Phase 4: Integrated GenjiRoguelikeMode wires Title Challenge UI, Codex Tab
   assert.ok(uiEl.querySelector('.m-career-bar'), 'Expected .m-career-bar on Title screen');
   assert.ok(uiEl.querySelector('.m-challenge-box'), 'Expected .m-challenge-box on Title screen');
   assert.ok(uiEl.querySelector('[data-act="codex"]'), 'Expected Codex button in Title actions');
+  assert.ok(uiEl.querySelector('[data-perf="off"]'), 'Expected Perf HUD toggle in Settings pane');
 
   game.openCodex();
   const codexPane = uiEl.querySelector('.m-codex-pane') as HTMLElement | null;
@@ -461,9 +466,16 @@ test('Phase 4: Integrated GenjiRoguelikeMode wires Title Challenge UI, Codex Tab
   assert.equal(game.challenge.scoreMultiplier, 2.2);
 
   game.start({ skipIntro: true });
+  assert.equal(mockG.hud.visible, true, 'Gameplay HUD must be visible during active run');
   assert.equal(mockG.player.maxHealth, 150, 'glass_cannon must scale Genji base 200 HP to 150 HP');
   assert.ok(mockG.getTacticalDamageMultiplier() >= 1.38, 'glass_cannon must boost player damage by +38%');
   assert.ok(uiEl.querySelector('.g-chip.g-chip-chal'), 'Active Shura challenge must display .g-chip-chal in HUD');
+
+  // Pausing must hide background gameplay HUD, and resuming must restore it
+  game.pause();
+  assert.equal(mockG.hud.visible, false, 'Pause must hide background gameplay HUD');
+  game.resume();
+  assert.equal(mockG.hud.visible, true, 'Resume must restore gameplay HUD');
 
   // Verify blood_moon vampiric kill heal (+14 HP) & hostile Codex discovery
   mockG.player.health = 100;
@@ -479,9 +491,52 @@ test('Phase 4: Integrated GenjiRoguelikeMode wires Title Challenge UI, Codex Tab
   // Trigger player:dead -> settles run into CareerStore and renders .m-dead-summary
   events.emit('player:dead', {});
   assert.equal(game.state, 'dead');
+  assert.equal(mockG.hud.visible, false, 'Death settlement must hide background gameplay HUD');
   assert.equal(game.career.profile.totalRuns, 1);
   assert.equal(game.career.profile.highestWave, game.run.wave);
   assert.ok(game.career.profile.honorPoints >= 25);
   const deadSummary = uiEl.querySelector('.m-dead-summary');
   assert.ok(deadSummary && deadSummary.textContent?.includes('获赐武勋'));
+});
+
+test('Mobile UI & iOS Chrome Adaptation: Perf HUD auto-collapse on touch viewports & visibility toggle', () => {
+  assert.equal(
+    shouldAutoCollapsePerfHud({
+      coarsePointer: true,
+      maxTouchPoints: 5,
+      viewportWidth: 844,
+      viewportHeight: 315,
+    }),
+    true
+  );
+  assert.equal(
+    shouldAutoCollapsePerfHud({
+      coarsePointer: false,
+      maxTouchPoints: 0,
+      viewportWidth: 1440,
+      viewportHeight: 900,
+    }),
+    false
+  );
+
+  let appEl = document.getElementById('app');
+  if (!appEl) {
+    appEl = document.createElement('div');
+    appEl.id = 'app';
+    document.body.appendChild(appEl);
+  }
+  const hud = createPerfHud({});
+  const el = document.getElementById('perf-hud') as HTMLElement | null;
+  assert.ok(el, 'Expected #perf-hud mounted');
+  assert.equal(hud.visible, true);
+  assert.equal(el.hidden, false);
+
+  hud.setVisible(false);
+  assert.equal(hud.visible, false);
+  assert.equal(el.hidden, true);
+
+  hud.setVisible(true);
+  assert.equal(hud.visible, true);
+  assert.equal(el.hidden, false);
+  hud.dispose();
 });

@@ -15,9 +15,9 @@
   --gl: max(16px, env(safe-area-inset-left, 0px)); --gr: max(16px, env(safe-area-inset-right, 0px));
   --shadow: 0 0 2px rgba(0, 0, 0, .75), 0 1px 5px rgba(0, 0, 0, .55);
 }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; overscroll-behavior: none; }
 body { background: var(--ink); color: var(--bone); overflow: hidden; font-family: var(--f-label); -webkit-text-size-adjust: 100%; }
-#app { position: fixed; inset: 0; overflow: hidden; background: var(--ink); -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+#app { position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: 100dvh; height: var(--app-h, 100dvh); overflow: hidden; background: var(--ink); -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 #app *, #app *::before, #app *::after { box-sizing: border-box; }
 #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
 #ui { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -2311,12 +2311,319 @@ html.is-portrait-blocked #ui {
 }
 .m-ds-row b { color: #ffffff; }
 
-@media (max-height: 540px) {
-  .m-career-bar { margin-top: 6px; padding: 3px 9px; font-size: 11px; }
-  .m-challenge-box { margin: 6px 0 8px; padding: 6px 9px; }
-  .m-ch-btn, .m-ch-mut { padding: 3px 7px; font-size: 11px; }
-  .m-ch-desc { display: none; }
+/* ==========================================================================
+   MOBILE & iOS CHROME (CriOS / WebKit) DYNAMIC VIEWPORT & UI ADAPTATION
+   ========================================================================== */
+
+/* Hide gameplay-only overlays whenever Title, Pause, or Death Settlement is open */
+body:not([data-state="playing"]) .g-hud,
+body:not([data-state="playing"]) .g-top-actions {
+  display: none !important;
 }
 
+/* iOS WebKit Fullscreen Guide Pill & Settings Callout */
+.m-cb-ios-fs {
+  margin-left: 4px;
+  padding: 2px 8px;
+  background: rgba(255, 179, 71, 0.18);
+  border: 1px solid rgba(255, 179, 71, 0.65);
+  color: var(--signal-hot);
+  font: 700 11px/1.25 var(--f-label);
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.m-cb-ios-fs:hover,
+.m-cb-ios-fs:active {
+  background: rgba(255, 179, 71, 0.32);
+  color: #ffffff;
+}
+.m-ios-fs-guide {
+  margin: 0 !important;
+  padding: 8px 10px;
+  background: rgba(255, 179, 71, 0.1);
+  border-left: 2.5px solid var(--signal);
+  font: 400 12px/1.55 var(--f-label);
+  color: rgba(232, 228, 218, 0.9);
+}
+.m-ios-fs-guide b {
+  color: var(--signal-hot);
+}
 
+/* Mobile #perf-hud: compact top-bar FPS capsule during gameplay, hidden on menus/modals */
+html.is-genji-touch body:not([data-state="playing"]) #perf-hud,
+html.is-portrait-blocked #perf-hud {
+  display: none !important;
+}
+html.is-genji-touch #perf-hud {
+  top: max(10px, calc(var(--sat) + 8px)) !important;
+  right: calc(max(12px, calc(var(--sar) + 8px)) + 78px) !important;
+  max-height: calc(var(--app-h, 100dvh) - 24px - var(--sat) - var(--sab));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+html.is-genji-touch #perf-hud.is-collapsed {
+  border-left-width: 2px !important;
+  background: rgba(9, 13, 18, 0.72) !important;
+}
 
+@media (max-height: 540px) {
+  body:not([data-state="playing"]) #perf-hud {
+    display: none !important;
+  }
+}
+
+/* Landscape Mobile Widescreen Overrides (placed after desktop typography rules) */
+@media (max-height: 540px) and (orientation: landscape) {
+  .m-bars {
+    display: none !important;
+  }
+  .m-title {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    align-items: flex-start;
+    padding: calc(8px + var(--sat)) max(18px, var(--gr)) calc(10px + var(--sab)) max(18px, var(--gl));
+    gap: 12px;
+  }
+  .m-title-main {
+    margin: auto 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .menu .m-title .m-word {
+    font-size: clamp(24px, 7vh, 34px) !important;
+    line-height: 1.05 !important;
+    margin: 2px 0 4px !important;
+  }
+  .menu .m-title .m-subtitle {
+    display: inline-block !important;
+    font-size: 11.5px !important;
+    margin-left: 10px;
+    margin-top: 0 !important;
+    vertical-align: middle;
+  }
+  .m-career-bar {
+    margin-top: 4px;
+    padding: 3px 9px;
+    font-size: 11px;
+    gap: 4px 7px;
+  }
+  .m-hero-picker {
+    margin-top: 6px;
+    gap: 7px;
+  }
+  .m-hero-card {
+    padding: 6px 10px;
+    gap: 3px;
+    min-height: 0;
+  }
+  .m-challenge-box {
+    margin: 6px 0;
+    padding: 5px 9px;
+    max-width: 100%;
+  }
+  .m-ch-row + .m-ch-row {
+    margin-top: 4px;
+  }
+  .m-ch-btn,
+  .m-ch-mut {
+    padding: 3px 8px;
+    font-size: 11px;
+    min-height: 28px;
+  }
+  .m-ch-desc {
+    display: none;
+  }
+  .m-title .m-actions {
+    margin-top: 7px;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .m-title .btn {
+    min-height: 38px;
+    font-size: 12.5px;
+    padding: 1px 14px 0;
+  }
+  .m-title .btn.primary {
+    min-height: 40px;
+    font-size: 14px;
+    padding: 1px 24px 0 26px;
+  }
+
+  /* Pause / Death / Debrief Cards fitted to dynamic iOS Chrome height */
+  .m-card {
+    width: min(520px, calc(100vw - var(--gl) - var(--gr)));
+    max-height: calc(var(--app-h, 100dvh) - 16px - var(--sat) - var(--sab));
+    padding: 12px 18px;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+  .m-card .m-h {
+    font-size: clamp(22px, 7.6vh, 32px) !important;
+    margin: 3px 0 6px !important;
+  }
+  .m-stats > div {
+    padding: 4px 0;
+  }
+  .m-stats dt {
+    font-size: 12px;
+  }
+  .m-stats dd {
+    font-size: 14px;
+  }
+  .m-dead-summary {
+    margin: 6px 0 8px;
+    padding: 6px 10px;
+  }
+  .m-ds-head {
+    margin-bottom: 3px;
+  }
+  .m-ds-head b {
+    font-size: 13px;
+  }
+  .m-ds-row {
+    font-size: 11.5px;
+    gap: 4px 10px;
+  }
+  .m-dead .m-actions.col,
+  .m-debrief .m-actions.col {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .m-dead .m-actions.col .btn,
+  .m-debrief .m-actions.col .btn {
+    flex: 1 1 50%;
+    min-height: 40px;
+    text-align: center;
+    padding: 1px 12px 0;
+    font-size: 13px;
+  }
+  [data-s="paused"] .m-actions.col {
+    margin-top: 8px;
+    gap: 6px;
+  }
+  [data-s="paused"] .m-actions.col .btn {
+    min-height: 36px;
+    font-size: 12.5px;
+  }
+
+  /* Settings / Controls / Codex Drawer */
+  .panel {
+    width: min(560px, 100vw);
+    height: var(--app-h, 100dvh);
+    padding-top: calc(4px + var(--sat));
+  }
+  .panel-h {
+    padding: 4px max(16px, var(--sar)) 0 max(16px, var(--gl));
+    gap: 8px;
+  }
+  .tabs {
+    gap: 12px;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .tab {
+    font-size: 13px;
+    padding: 10px 2px 9px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  .m-codex-pane {
+    max-height: none;
+  }
+  .row {
+    padding: 10px 0 11px;
+    gap: 7px;
+  }
+}
+
+/* Ultra-Short Mobile Browser Tab (e.g. iOS Chrome with Address Bar ~305px-420px tall) */
+@media (max-height: 430px) and (orientation: landscape) {
+  .m-brand-lockup,
+  .m-premise,
+  .m-note {
+    display: none !important;
+  }
+  .m-hero-card > span {
+    -webkit-line-clamp: 1;
+  }
+  .gt-pause {
+    top: max(6px, calc(var(--sat) + 4px));
+    height: 36px;
+    min-height: 36px;
+    min-width: 62px;
+    padding: 0 10px;
+  }
+  html.is-genji-touch #perf-hud {
+    top: max(7px, calc(var(--sat) + 5px)) !important;
+    right: calc(max(12px, calc(var(--sar) + 8px)) + 72px) !important;
+  }
+  .gt-cluster {
+    height: 196px;
+    width: 246px;
+    bottom: max(4px, var(--sab));
+  }
+  .gt-fire {
+    width: 72px;
+    height: 72px;
+    bottom: 6px;
+    right: 8px;
+  }
+  .gt-fan {
+    width: 50px;
+    height: 50px;
+    right: 92px;
+    bottom: 6px;
+  }
+  .gt-jump {
+    width: 52px;
+    height: 52px;
+    right: 4px;
+    bottom: 88px;
+  }
+  .gt-deflect {
+    width: 50px;
+    height: 50px;
+    right: 82px;
+    bottom: 78px;
+  }
+  .gt-swift {
+    width: 50px;
+    height: 50px;
+    right: 146px;
+    bottom: 38px;
+  }
+  .gt-ult {
+    width: 52px;
+    height: 52px;
+    right: 78px;
+    bottom: 136px;
+  }
+  .gt-melee {
+    width: 44px;
+    height: 44px;
+    right: 148px;
+    bottom: 102px;
+  }
+  .gt-reload {
+    width: 44px;
+    height: 44px;
+    right: 6px;
+    bottom: 148px;
+  }
+  .gt-lfire {
+    width: 48px;
+    height: 48px;
+    bottom: max(112px, calc(var(--sab) + 106px));
+  }
+  .gt-stick {
+    width: 86px;
+    height: 86px;
+    bottom: max(12px, var(--sab));
+  }
+}

@@ -5140,7 +5140,39 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   menus.applySettings();
   currentDynamicFov = menus.settings ? menus.settings.fov : 75;
 
-  // Add BGM Toggle, Touch Controls Preference, Touch Sensitivity & Mobile Aim Assist inside Settings Panel
+  // Detect iOS WebKit non-standalone browser (Chrome CriOS / Safari / Edge on iPhone/iPad)
+  const isStandalonePwa = (() => {
+    if (typeof window === 'undefined') return false;
+    const mStandalone =
+      typeof window.matchMedia === 'function' &&
+      (window.matchMedia('(display-mode: standalone)').matches ||
+        window.matchMedia('(display-mode: fullscreen)').matches);
+    const navStandalone =
+      typeof navigator !== 'undefined' &&
+      Boolean((navigator as unknown as { standalone?: boolean }).standalone);
+    return mStandalone || navStandalone;
+  })();
+
+  const isIosWebkitBrowser = (() => {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    const isIosUa = /iPhone|iPad|iPod|CriOS|FxiOS|EdgiOS/i.test(ua);
+    const isIpadOs =
+      /Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1;
+    return (isIosUa || isIpadOs) && !isStandalonePwa;
+  })();
+
+  let perfHudPrefOn = (() => {
+    try {
+      return typeof localStorage !== 'undefined'
+        ? localStorage.getItem('hanamura_perf_hud_v1') !== 'off'
+        : true;
+    } catch {
+      return true;
+    }
+  })();
+
+  // Add BGM Toggle, Perf HUD Toggle, Touch Controls, Sensitivity, Aim Assist & iOS Fullscreen Guide inside Settings Panel
   const settingsPane = menus.root.querySelector('[data-pane="settings"]');
   if (settingsPane) {
     const touchFrag = document.createDocumentFragment();
@@ -5152,6 +5184,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       <div class="seg" role="group" aria-labelledby="l-wafu-bgm">
         <button type="button" data-bgm="on">开启</button>
         <button type="button" data-bgm="off">关闭</button>
+      </div>
+    `;
+
+    const perfRow = document.createElement('div');
+    perfRow.className = 'row';
+    perfRow.innerHTML = `
+      <label id="l-perf-hud">性能监控浮窗 (FPS)</label>
+      <div class="seg" role="group" aria-labelledby="l-perf-hud">
+        <button type="button" data-perf="on">显示</button>
+        <button type="button" data-perf="off">隐藏</button>
       </div>
     `;
 
@@ -5187,7 +5229,19 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       </div>
     `;
 
-    touchFrag.append(bgmRow, touchRow, touchSensRow, touchAssistRow);
+    touchFrag.append(bgmRow, perfRow, touchRow, touchSensRow, touchAssistRow);
+
+    const fsRowEl = settingsPane.querySelector('[data-row="fs"]') as HTMLElement | null;
+    if (isIosWebkitBrowser || (fsRowEl && fsRowEl.hidden && !isStandalonePwa)) {
+      const iosFsRow = document.createElement('div');
+      iosFsRow.className = 'row m-ios-fs-row';
+      iosFsRow.innerHTML = `
+        <label>iOS 真全屏运行方式</label>
+        <p class="m-ios-fs-guide">苹果 iOS 系统禁止 Chrome / Safari 网页直接调用全屏接口。点击地址栏右上角 <b>【分享 ↑】→【添加到主屏幕】</b>，从手机桌面图标启动即可 <b>100% 隐藏浏览器顶栏真全屏</b> 畅玩！</p>
+      `;
+      touchFrag.append(iosFsRow);
+    }
+
     const firstNote = settingsPane.querySelector('.panel-note');
     if (firstNote) settingsPane.insertBefore(touchFrag, firstNote);
     else settingsPane.appendChild(touchFrag);
@@ -5196,6 +5250,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       bgmRow.querySelectorAll<HTMLButtonElement>('button[data-bgm]').forEach((b) => {
         const wantOn = b.dataset.bgm === 'on';
         b.setAttribute('aria-pressed', String(wantOn === audio.getBgmEnabled()));
+      });
+      const isPerfOn = G.perfHud ? Boolean(G.perfHud.visible) : perfHudPrefOn;
+      perfRow.querySelectorAll<HTMLButtonElement>('button[data-perf]').forEach((b) => {
+        const wantOn = b.dataset.perf === 'on';
+        b.setAttribute('aria-pressed', String(wantOn === isPerfOn));
       });
       touchRow.querySelectorAll<HTMLButtonElement>('button[data-tpref]').forEach((b) => {
         b.setAttribute('aria-pressed', String(b.dataset.tpref === touchCtrl.preference));
@@ -5210,6 +5269,22 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         const nextOn = b.dataset.bgm === 'on';
         audio.setBgmEnabled(nextOn);
         careerStore.setBgmEnabled(nextOn);
+        syncTouchSeg();
+      });
+    });
+    perfRow.querySelectorAll<HTMLButtonElement>('button[data-perf]').forEach((b) => {
+      b.addEventListener('click', () => {
+        perfHudPrefOn = b.dataset.perf === 'on';
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('hanamura_perf_hud_v1', perfHudPrefOn ? 'on' : 'off');
+          }
+        } catch {
+          // ignore storage errors
+        }
+        if (G.perfHud && typeof G.perfHud.setVisible === 'function') {
+          G.perfHud.setVisible(perfHudPrefOn);
+        }
         syncTouchSeg();
       });
     });
@@ -5266,6 +5341,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     const prof = careerStore.profile;
     const rank = careerStore.getRankInfo();
     const codex = careerStore.getCodexProgress();
+    const iosTipHtml = isIosWebkitBrowser
+      ? `<button type="button" class="m-cb-ios-fs" data-act="settings" title="点击查看 iOS 添加主屏幕无顶栏真全屏运行方法">全屏指南：分享↑→添加到主屏幕</button>`
+      : '';
     careerBannerEl.innerHTML = `
       <span class="m-cb-rank"><b>✦ ${rank.title}</b><em>武勋 ${prof.honorPoints}</em></span>
       <span class="m-cb-sep">·</span>
@@ -5274,6 +5352,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       <span>累计 <b>${prof.totalKills}</b> 斩</span>
       <span class="m-cb-sep">·</span>
       <span>秘传图鉴 <b>${codex.totalUnlocked}/${codex.totalEntries}</b> (${codex.completionPct}%)</span>
+      ${iosTipHtml}
     `;
   }
 
@@ -5852,6 +5931,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     setGameState('paused');
     player.enabled = false;
     touchCtrl.setGameplayVisible(false);
+    G.hud && G.hud.show && G.hud.show(false);
     G.input.setGameplay && G.input.setGameplay(false);
     G.input.exitLock && G.input.exitLock();
     menus.setLookMode(touchCtrl.active ? '横版双摇杆触控已启用' : G.input.describeMode());
@@ -5865,6 +5945,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     setGameState('playing');
     syncHeroWeaponVisibility();
     player.enabled = true;
+    G.hud && G.hud.show && G.hud.show(true);
     G.input.setGameplay && G.input.setGameplay(true);
     touchCtrl.setGameplayVisible(true);
     if (lockMouse && !touchCtrl.active) G.input.requestLock && G.input.requestLock();
@@ -5924,6 +6005,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     audio.setSoundscapeState('silent', 0);
     player.enabled = false;
     touchCtrl.setGameplayVisible(false);
+    G.hud && G.hud.show && G.hud.show(false);
+    G.hud && G.hud.clearRadio && G.hud.clearRadio();
     G.input.setGameplay && G.input.setGameplay(false);
     G.input.exitLock && G.input.exitLock();
     menus.setDead({

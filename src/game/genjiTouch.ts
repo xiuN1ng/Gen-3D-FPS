@@ -589,13 +589,40 @@ export function createGenjiTouchController(
     { passive: true, capture: true }
   );
 
+  const syncVisualViewportCssVars = () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const vv = window.visualViewport;
+    const w = Math.round(vv && vv.width ? vv.width : window.innerWidth || 1440);
+    const h = Math.round(vv && vv.height ? vv.height : window.innerHeight || 900);
+    const docStyle = document.documentElement && document.documentElement.style;
+    if (docStyle && typeof docStyle.setProperty === 'function') {
+      docStyle.setProperty('--app-w', `${w}px`);
+      docStyle.setProperty('--app-h', `${h}px`);
+    }
+    if (isActive && typeof window.scrollTo === 'function' && (window.scrollX || window.scrollY)) {
+      window.scrollTo(0, 0);
+    }
+  };
+
   window.addEventListener('resize', () => {
+    syncVisualViewportCssVars();
     refreshVisibility();
   });
   window.addEventListener('orientationchange', () => {
+    syncVisualViewportCssVars();
     refreshVisibility();
   });
+  if (typeof window !== 'undefined' && window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      syncVisualViewportCssVars();
+      refreshVisibility();
+    });
+    window.visualViewport.addEventListener('scroll', () => {
+      syncVisualViewportCssVars();
+    });
+  }
 
+  syncVisualViewportCssVars();
   refreshVisibility();
 
   return {
