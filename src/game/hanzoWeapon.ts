@@ -1298,6 +1298,9 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
     const cam = G.camera;
     _fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
     _v3.copy(cam.position).addScaledVector(_fwd, 1.85);
+    if (G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+      G.tacticalProps.damageSphere(_v3, 2.2, 72);
+    }
     if (G.level && G.level.damageInRadius) {
       G.level.damageInRadius(_v3, 2.1, 72, _fwd);
     }
@@ -1446,6 +1449,9 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
           const abLen2 = Math.max(1e-5, _v3.lengthSq());
 
           // Shatter destructible props along the dragon path
+          if (G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+            G.tacticalProps.damageSphere(ds.headPos, ds.radius, tickDamageBase * 1.5);
+          }
           if (G.level && G.level.damageInRadius) {
             G.level.damageInRadius(ds.headPos, ds.radius * 0.95, tickDamageBase * 1.4, ds.dir);
           }
@@ -1542,7 +1548,11 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
 
           // Dragonstrike spirit catalyst arrow flies `0.34s` then erupts into Twin Spirit Dragons (or earlier if hitting world/enemy)
           let bestDist = stepDist;
-          let hitKind: 'none' | 'world' | 'destructible' | 'colossus' | 'enemy' = 'none';
+          let hitKind: 'none' | 'world' | 'destructible' | 'tacticalProp' | 'colossus' | 'enemy' = 'none';
+          const tacMult =
+            typeof G.getTacticalDamageMultiplier === 'function'
+              ? G.getTacticalDamageMultiplier()
+              : 1.0;
 
           const wHit =
             G.physics && typeof G.physics.raycast === 'function'
@@ -1559,6 +1569,14 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
           if (dHit && dHit.dist < bestDist) {
             bestDist = dHit.dist;
             hitKind = 'destructible';
+          }
+          const pHit =
+            G.tacticalProps && typeof G.tacticalProps.raycast === 'function'
+              ? G.tacticalProps.raycast(a.prev, a.dir, bestDist)
+              : null;
+          if (pHit && pHit.dist < bestDist) {
+            bestDist = pHit.dist;
+            hitKind = 'tacticalProp';
           }
           const cHit = cb.raycastColossalBoss
             ? cb.raycastColossalBoss(a.prev, a.dir, bestDist)
@@ -1592,7 +1610,7 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
             }
             const sonicMult = getSonicDamageMultiplier(eHit.point);
             const critMult = isHead ? stats.headshotMultiplier : 1.0;
-            const finalDmg = Math.max(1, Math.round(a.damage * critMult * sonicMult));
+            const finalDmg = Math.max(1, Math.round(a.damage * critMult * sonicMult * tacMult));
 
             const killed =
               eHit.enemy.damage(finalDmg, eHit.point, a.dir, isHead ? 'head' : 'body') === true;
@@ -1640,7 +1658,7 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
             }
             const sonicMult = getSonicDamageMultiplier(cHit.point);
             const critMult = isWeak ? stats.headshotMultiplier : 1.0;
-            const finalDmg = Math.max(1, Math.round(a.damage * critMult * sonicMult));
+            const finalDmg = Math.max(1, Math.round(a.damage * critMult * sonicMult * tacMult));
             const res = cb.damageColossalBoss(
               finalDmg,
               cHit.point,
@@ -1653,6 +1671,17 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
             spawnSlipstreamSegment(a.prev, cHit.point, 1.35, 0.16);
             spawnImpactSparks(cHit.point, a.dir, 9, 1.25);
             cb.onDamageDealt(finalDmg, null, res.killed, isWeak, a.isStorm ? 'storm_arrow' : 'bow');
+            a.active = false;
+            continue;
+          } else if (hitKind === 'tacticalProp' && pHit) {
+            if (a.isSonic) {
+              a.isSonic = false;
+              deploySonicReconDome(pHit.point);
+            }
+            G.tacticalProps.triggerHit(pHit.propIndex, Math.round(a.damage * tacMult), pHit.point, a.dir);
+            if (G.combat && G.combat.stats) G.combat.stats.hits++;
+            spawnSlipstreamSegment(a.prev, pHit.point, 1.05, 0.14);
+            spawnImpactSparks(pHit.point, a.dir, 7, 1.15);
             a.active = false;
             continue;
           } else if (hitKind === 'destructible' && dHit) {
