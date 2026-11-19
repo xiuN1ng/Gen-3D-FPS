@@ -566,11 +566,60 @@ export class HeadlessElement {
     if (name === 'hidden') this.hidden = false;
   }
 
+  get nextSibling(): HeadlessElement | null {
+    if (!this.parentElement) return null;
+    const idx = this.parentElement.children.indexOf(this);
+    return idx >= 0 && idx + 1 < this.parentElement.children.length
+      ? this.parentElement.children[idx + 1]
+      : null;
+  }
+
   appendChild<T extends HeadlessElement>(child: T): T {
+    if (child.tagName === '#DOCUMENT-FRAGMENT') {
+      for (const fragChild of [...child.children]) {
+        this.appendChild(fragChild);
+      }
+      return child;
+    }
     if (child.parentElement) child.parentElement.removeChild(child);
     child.parentElement = this;
     this.children.push(child);
     return child;
+  }
+
+  insertBefore<T extends HeadlessElement>(newNode: T, refNode: HeadlessElement | null): T {
+    if (!refNode) return this.appendChild(newNode);
+    if (newNode.tagName === '#DOCUMENT-FRAGMENT') {
+      for (const fragChild of [...newNode.children]) {
+        this.insertBefore(fragChild, refNode);
+      }
+      return newNode;
+    }
+    if (newNode.parentElement) newNode.parentElement.removeChild(newNode);
+    const idx = this.children.indexOf(refNode);
+    newNode.parentElement = this;
+    if (idx >= 0) {
+      this.children.splice(idx, 0, newNode);
+    } else {
+      this.children.push(newNode);
+    }
+    return newNode;
+  }
+
+  insertAdjacentElement(pos: string, el: HeadlessElement): HeadlessElement | null {
+    if (pos === 'beforebegin' && this.parentElement) {
+      return this.parentElement.insertBefore(el, this);
+    }
+    if (pos === 'afterbegin') {
+      return this.insertBefore(el, this.children[0] || null);
+    }
+    if (pos === 'beforeend') {
+      return this.appendChild(el);
+    }
+    if (pos === 'afterend' && this.parentElement) {
+      return this.parentElement.insertBefore(el, this.nextSibling);
+    }
+    return null;
   }
 
   append(...nodes: any[]) {
@@ -731,6 +780,9 @@ export function installHeadlessDomShimIfNeeded(): void {
     createElement(tag: string) {
       if (String(tag).toLowerCase() === 'canvas') return new HeadlessCanvasElement(doc);
       return new HeadlessElement(tag, doc);
+    },
+    createDocumentFragment() {
+      return new HeadlessElement('#document-fragment', doc);
     },
     createElementNS(_ns: string, tag: string) {
       return doc.createElement(tag);

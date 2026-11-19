@@ -71,6 +71,7 @@ export interface TacticalArenaController {
   ) => number;
   update: (dt: number, player?: any) => void;
   onWaveStart: () => void;
+  setModifiers: (opts: { cooldownScale?: number; damageMult?: number }) => void;
   getUpdraftBuffRemaining: () => number;
   getDamageMultiplier: () => number;
   getDiagnostics: () => TacticalArenaDiagnostics;
@@ -428,6 +429,8 @@ export function createTacticalArenaProps(
   let caskDetonations = 0;
   let gongRings = 0;
   let updraftLaunches = 0;
+  let cooldownScale = 1.0;
+  let propDmgMult = 1.0;
 
   // Scratch math objects (strictly zero per-frame allocations)
   const _mat4 = new THREE.Matrix4();
@@ -585,7 +588,7 @@ export function createTacticalArenaProps(
   function detonateSakeCask(idx: number): TacticalPropTriggerOutcome {
     propAlive[idx] = 0;
     propHp[idx] = 0;
-    propCooldown[idx] = CASK_RESPAWN_SEC;
+    propCooldown[idx] = CASK_RESPAWN_SEC * cooldownScale;
     caskDetonations++;
 
     const cx = propPosX[idx];
@@ -616,7 +619,7 @@ export function createTacticalArenaProps(
     }
     if (G.level && typeof G.level.damageInRadius === 'function') {
       _blastDir.set(0, 1, 0);
-      G.level.damageInRadius(_blastCenter, CASK_BLAST_RADIUS * 0.85, 140, _blastDir);
+      G.level.damageInRadius(_blastCenter, CASK_BLAST_RADIUS * 0.85, 140 * propDmgMult, _blastDir);
     }
 
     let enemiesHit = 0;
@@ -632,14 +635,14 @@ export function createTacticalArenaProps(
       if (dist > CASK_BLAST_RADIUS) continue;
 
       const falloff = Math.max(0.55, 1 - dist / (CASK_BLAST_RADIUS * 1.25));
-      const dmg = Math.round(CASK_BLAST_DAMAGE * falloff);
+      const dmg = Math.round(CASK_BLAST_DAMAGE * propDmgMult * falloff);
       _blastDir.set(dx || 0.1, 0.35, dz || 0.1).normalize();
       en.__bypassShieldOnce = true;
       en.__guardBrokenT = Math.max(en.__guardBrokenT || 0, 1.8);
       const killed = en.damage(dmg, en.pos, _blastDir, 'splash') === true;
       if (en.alive) {
         en.__bleedT = 3.0;
-        en.__bleedDps = Math.max(en.__bleedDps || 0, 22);
+        en.__bleedDps = Math.max(en.__bleedDps || 0, Math.round(22 * propDmgMult));
       }
       enemiesHit++;
       if (killed) kills++;
@@ -652,7 +655,7 @@ export function createTacticalArenaProps(
       const bRes = cb.cleaveColossalBoss(
         _blastCenter,
         CASK_BLAST_RADIUS + 1.2,
-        240,
+        Math.round(240 * propDmgMult),
         _blastDir,
         'sake_cask'
       );
@@ -674,7 +677,7 @@ export function createTacticalArenaProps(
   }
 
   function ringSacredGong(idx: number): TacticalPropTriggerOutcome {
-    propCooldown[idx] = GONG_COOLDOWN_SEC;
+    propCooldown[idx] = GONG_COOLDOWN_SEC * cooldownScale;
     propWobbleT[idx] = 0.75;
     gongRings++;
 
@@ -699,6 +702,7 @@ export function createTacticalArenaProps(
       G.render.lightPool.flash(_blastCenter, 0xffd65c, 78, GONG_WAVE_RADIUS * 1.9, 0.32);
     }
 
+    const gongDmg = Math.round(GONG_WAVE_DAMAGE * propDmgMult);
     let enemiesHit = 0;
     let kills = 0;
     const cands = queryNearbyEnemies(gx, gy + 1.0, gz, GONG_WAVE_RADIUS);
@@ -715,10 +719,10 @@ export function createTacticalArenaProps(
       en.__bypassShieldOnce = true;
       en.__guardBrokenT = Math.max(en.__guardBrokenT || 0, 2.0);
       en.__gongStaggerT = 1.2;
-      const killed = en.damage(GONG_WAVE_DAMAGE, en.pos, _blastDir, 'splash') === true;
+      const killed = en.damage(gongDmg, en.pos, _blastDir, 'splash') === true;
       enemiesHit++;
       if (killed) kills++;
-      cb.onEnemyHit?.(en, GONG_WAVE_DAMAGE, killed, _blastCenter);
+      cb.onEnemyHit?.(en, gongDmg, killed, _blastCenter);
     }
 
     let bossHit = false;
@@ -727,7 +731,7 @@ export function createTacticalArenaProps(
       const bRes = cb.cleaveColossalBoss(
         _blastCenter,
         GONG_WAVE_RADIUS,
-        110,
+        Math.round(110 * propDmgMult),
         _blastDir,
         'spirit_gong'
       );
@@ -998,6 +1002,14 @@ export function createTacticalArenaProps(
     damageSphere,
     update,
     onWaveStart,
+    setModifiers(opts: { cooldownScale?: number; damageMult?: number }) {
+      if (opts.cooldownScale !== undefined && Number.isFinite(opts.cooldownScale)) {
+        cooldownScale = Math.max(0.2, Math.min(2.0, opts.cooldownScale));
+      }
+      if (opts.damageMult !== undefined && Number.isFinite(opts.damageMult)) {
+        propDmgMult = Math.max(0.5, Math.min(3.0, opts.damageMult));
+      }
+    },
     getUpdraftBuffRemaining: () => updraftBuffTimer,
     getDamageMultiplier: () => (updraftBuffTimer > 0 ? 1.18 : 1.0),
     getDiagnostics(): TacticalArenaDiagnostics {
