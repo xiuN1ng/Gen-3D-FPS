@@ -16,6 +16,10 @@ import {
   type GenjiBuildStats,
 } from './roguelike.ts';
 import { clamp, damp } from './rules.ts';
+import {
+  PROJECTILE_KIND,
+  type EcsCombatBridge,
+} from './ecsCombatBridge.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildHeldShurikenAssembly,
@@ -871,6 +875,25 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
       hitIds: new Set<number>(),
       hitBldgIds: new Set<string>(),
       hitColossus: false,
+    });
+  }
+
+  const _ecsCand: any[] = [];
+  const ecsCombat = G.ecsCombat as EcsCombatBridge | undefined;
+  if (ecsCombat) {
+    ecsCombat.registerProjectilePool({
+      name: 'genji_shurikens',
+      kind: PROJECTILE_KIND.GENJI_SHURIKEN,
+      faction: 0,
+      items: shurikenPool,
+      isActive: (s) => s.active && !s.impactResolved,
+    });
+    ecsCombat.registerProjectilePool({
+      name: 'genji_sword_waves',
+      kind: PROJECTILE_KIND.GENJI_SWORD_WAVE,
+      faction: 0,
+      items: wavePool,
+      isActive: (w) => w.active,
     });
   }
 
@@ -1930,7 +1953,14 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
           if (s.homing && G.enemies && G.enemies.list) {
             let bestEn: any = null;
             let bestD = 36;
-            for (const en of G.enemies.list) {
+            const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
+            let candList: any[] = G.enemies.list;
+            if (liveEcs) {
+              liveEcs.queryEnemiesInSphere(s.pos.x, s.pos.y, s.pos.z, 36, _ecsCand);
+              candList = _ecsCand;
+            }
+            for (let ci = 0; ci < candList.length; ci++) {
+              const en = candList[ci];
               if (!en.alive || s.hitIds.has(en.id)) continue;
               const d = en.pos.distanceTo(s.pos);
               if (d < bestD) {
@@ -2160,7 +2190,14 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
       }
 
       if (w.damage > 0 && G.enemies && G.enemies.list) {
-        for (const en of G.enemies.list) {
+        const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
+        let candList: any[] = G.enemies.list;
+        if (liveEcs) {
+          liveEcs.queryEnemiesInSphere(w.pos.x, w.pos.y, w.pos.z, w.radius + 1.2, _ecsCand);
+          candList = _ecsCand;
+        }
+        for (let ci = 0; ci < candList.length; ci++) {
+          const en = candList[ci];
           if (!en.alive || w.hitIds.has(en.id)) continue;
           _v1.copy(en.pos).setY(en.pos.y + 0.95);
           if (_v1.distanceTo(w.pos) <= w.radius) {

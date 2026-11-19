@@ -22,6 +22,10 @@ import {
   type VisorCandidate,
 } from './roguelike.ts';
 import { clamp, damp } from './rules.ts';
+import {
+  PROJECTILE_KIND,
+  type EcsCombatBridge,
+} from './ecsCombatBridge.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildMasterworkPulseRifleRig,
@@ -532,6 +536,26 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       life: 0,
       homing: false,
       mesh: grp,
+    });
+  }
+
+  const _ecsCand: any[] = [];
+  const ecsCombat = G.ecsCombat as EcsCombatBridge | undefined;
+  if (ecsCombat) {
+    ecsCombat.registerProjectilePool({
+      name: 'gunner_pulse_bolts',
+      kind: PROJECTILE_KIND.GUNNER_PULSE,
+      faction: 0,
+      items: pulsePool,
+      isActive: (b) => b.active && !b.impactResolved,
+    });
+    ecsCombat.registerProjectilePool({
+      name: 'gunner_helix_rockets',
+      kind: PROJECTILE_KIND.GUNNER_HELIX,
+      faction: 0,
+      items: rocketPool,
+      isActive: (r) => r.active,
+      getDamage: (r) => r.directDamage + r.splashDamage,
     });
   }
 
@@ -1247,7 +1271,23 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
 
     if (G.enemies && G.enemies.list) {
       const stats = cb.getStats();
-      for (const en of G.enemies.list) {
+      const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
+      let candList: any[] = G.enemies.list;
+      if (liveEcs) {
+        liveEcs.queryEnemiesInSphere(
+          impactPt.x,
+          impactPt.y,
+          impactPt.z,
+          r.splashRadius + 2.0,
+          _ecsCand,
+        );
+        if (directEnemy && directEnemy.alive && _ecsCand.indexOf(directEnemy) === -1) {
+          _ecsCand.push(directEnemy);
+        }
+        candList = _ecsCand;
+      }
+      for (let ci = 0; ci < candList.length; ci++) {
+        const en = candList[ci];
         if (!en.alive) continue;
         _v1.copy(en.pos).setY(en.pos.y + 0.9);
         const dist = _v1.distanceTo(impactPt);
@@ -1298,7 +1338,14 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       cb.cleaveColossalBoss(cam.position, 4.4, 72, _fwd, 'melee');
     }
     if (G.enemies && G.enemies.list) {
-      for (const en of G.enemies.list) {
+      const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
+      let candList: any[] = G.enemies.list;
+      if (liveEcs) {
+        liveEcs.queryEnemiesInSphere(cam.position.x, cam.position.y, cam.position.z, 4.2, _ecsCand);
+        candList = _ecsCand;
+      }
+      for (let ci = 0; ci < candList.length; ci++) {
+        const en = candList[ci];
         if (!en.alive) continue;
         _v1.copy(en.pos).setY(en.pos.y + 0.9).sub(cam.position);
         const dist = _v1.length();

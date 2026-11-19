@@ -61,6 +61,10 @@ import {
   damp,
   formatTime,
 } from './rules.ts';
+import {
+  PROJECTILE_KIND,
+  type EcsCombatBridge,
+} from './ecsCombatBridge.ts';
 import { createGenjiAudio, type GenjiAudioController } from './genjiAudio.ts';
 import { createGenjiWeapon } from './genjiWeapon.ts';
 import { createGunnerWeapon } from './gunnerWeapon.ts';
@@ -1469,6 +1473,17 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     });
   }
 
+  const ecsCombatInit = G.ecsCombat as EcsCombatBridge | undefined;
+  if (ecsCombatInit) {
+    ecsCombatInit.registerProjectilePool({
+      name: 'deflect_spears',
+      kind: PROJECTILE_KIND.DEFLECT_SPEAR,
+      faction: 0,
+      items: deflectSpears,
+      isActive: (sp) => sp.active,
+    });
+  }
+
   const _weakCand = new THREE.Vector3();
   const _weakToDir = new THREE.Vector3();
   const _weakOut = new THREE.Vector3();
@@ -1582,6 +1597,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       G.enemies.debug.boltMesh.count = 0;
       G.enemies.debug.boltMesh.instanceMatrix.needsUpdate = true;
     }
+    (G.ecsCombat as EcsCombatBridge | undefined)?.syncProjectiles();
   }
 
   const _dbQ = new THREE.Quaternion();
@@ -2445,6 +2461,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (activeBoss && !activeBoss.alive) {
       activeBoss = null;
     }
+    (G.ecsCombat as EcsCombatBridge | undefined)?.markEnemiesDirty();
   }
 
   // =========================================================================
