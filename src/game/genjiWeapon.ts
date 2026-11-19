@@ -16,10 +16,12 @@ import {
   type GenjiBuildStats,
 } from './roguelike.ts';
 import { clamp, damp } from './rules.ts';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   PROJECTILE_KIND,
   type EcsCombatBridge,
 } from './ecsCombatBridge.ts';
+import type { CombatFeelVfxController } from './combatFeelVfx.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildHeldShurikenAssembly,
@@ -227,16 +229,28 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
     vertexShader: `
+      #ifdef USE_INSTANCING
+        attribute float aAlpha;
+      #endif
       varying vec2 vPos2;
+      varying float vWaveAlpha;
       void main() {
         // waveGeo was rotated Y by PI/2, so local Z/Y hold crescent plane coordinates
         vPos2 = vec2(-position.z, position.y);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #ifdef USE_INSTANCING
+          vWaveAlpha = aAlpha;
+          vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        #else
+          vWaveAlpha = 1.0;
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        #endif
+        gl_Position = projectionMatrix * mvPos;
       }
     `,
     fragmentShader: `
       uniform float uTime;
       varying vec2 vPos2;
+      varying float vWaveAlpha;
       void main() {
         float r = length(vPos2);
         float ang = atan(vPos2.y, vPos2.x);
@@ -249,7 +263,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
         vec3 jade = vec3(0.08, 0.84, 0.44);
         vec3 goldAmber = vec3(0.98, 0.82, 0.34);
         vec3 col = mix(jade, goldAmber, hotRazor * 0.85 + 0.12) * (0.78 + hotRazor * 0.65) * streak;
-        float a = clamp((edge * 0.72 + hotRazor * 0.75) * tipFade, 0.0, 0.88);
+        float a = clamp((edge * 0.72 + hotRazor * 0.75) * tipFade * vWaveAlpha, 0.0, 0.88);
         if (a < 0.01) discard;
         gl_FragColor = vec4(col, a);
       }
@@ -472,22 +486,35 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
     vertexShader: `
+      #ifdef USE_INSTANCING
+        attribute float aProgress;
+      #endif
       varying vec2 vUv;
+      varying float vRingProgress;
       void main() {
         vUv = uv * 2.0 - 1.0;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #ifdef USE_INSTANCING
+          vRingProgress = aProgress;
+          vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        #else
+          vRingProgress = 0.0;
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        #endif
+        gl_Position = projectionMatrix * mvPos;
       }
     `,
     fragmentShader: `
       uniform float uTime;
       varying vec2 vUv;
+      varying float vRingProgress;
       void main() {
         float r = length(vUv);
         if (r > 1.0) discard;
         float ang = atan(vUv.y, vUv.x);
         float ring = smoothstep(0.56, 0.78, r) * (1.0 - smoothstep(0.80, 0.98, r));
         float rays = pow(abs(cos(ang * 4.0 + uTime * 8.0)), 10.0) * smoothstep(1.0, 0.18, r);
-        float a = clamp(ring * 0.82 + rays * 0.58, 0.0, 0.88) * smoothstep(1.0, 0.84, r);
+        float lifeFade = 1.0 - smoothstep(0.35, 1.0, vRingProgress);
+        float a = clamp((ring * 0.82 + rays * 0.58) * lifeFade, 0.0, 0.88) * smoothstep(1.0, 0.84, r);
         if (a < 0.012) discard;
         vec3 col = mix(vec3(0.18, 0.92, 0.56), vec3(1.0, 0.86, 0.40), ring * 0.65 + rays * 0.55);
         gl_FragColor = vec4(col, a);
@@ -826,7 +853,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     });
   }
 
-  // --- Pool 2: Custom GLSL Crescent Sword-Ki Waves (`升龙裂空波`, `18` max) ---
+  // --- Pool 2: Custom GLSL Crescent Sword-Ki Waves (`升龙裂空波`, `18` max -> 1 GPU InstancedMesh!) ---
   const MAX_WAVES = 18;
   const crescentShape = new THREE.Shape();
   crescentShape.absarc(0, 0, 1.54, -Math.PI * 0.46, Math.PI * 0.46, false);
@@ -838,10 +865,21 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
   ]);
   const waveGeo = new THREE.ShapeGeometry(waveRibbonShape, 18);
   waveGeo.rotateY(Math.PI / 2);
+  const waveAlphaData = new Float32Array(MAX_WAVES).fill(1);
+  const waveAlphaAttr = new THREE.InstancedBufferAttribute(waveAlphaData, 1);
+  waveAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+  waveGeo.setAttribute('aAlpha', waveAlphaAttr);
+
+  const waveInstMesh = new THREE.InstancedMesh(waveGeo, matSwordKiShader, MAX_WAVES);
+  waveInstMesh.frustumCulled = false;
+  waveInstMesh.count = 0;
+  waveInstMesh.visible = false;
+  waveInstMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(waveInstMesh);
 
   interface ActiveCrescentWave {
     active: boolean;
-    mesh: any;
+    scale: number;
     pos: any;
     dir: any;
     speed: number;
@@ -857,13 +895,9 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
 
   const wavePool: ActiveCrescentWave[] = [];
   for (let i = 0; i < MAX_WAVES; i++) {
-    const mesh = new THREE.Mesh(waveGeo, matSwordKiShader);
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    worldGroup.add(mesh);
     wavePool.push({
       active: false,
-      mesh,
+      scale: 1,
       pos: new THREE.Vector3(),
       dir: new THREE.Vector3(),
       speed: 44,
@@ -897,7 +931,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     });
   }
 
-  // --- Pool 3: Spiraling Wind-Vortex Swift-Strike & Slipstream Trails (`28` max, Zero Straight Cylinder Rods!) ---
+  // --- Pool 3: Spiraling Wind-Vortex Swift-Strike & Slipstream Trails (`28` max, 56 Meshes -> 1 GPU InstancedMesh!) ---
   const MAX_BEAMS = 28;
   const spiralBeamPtsA: any[] = [];
   const spiralBeamPtsB: any[] = [];
@@ -930,10 +964,24 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     6,
     false
   );
+  const mergedDoubleHelixBeamGeo =
+    mergeGeometries([beamGeoA, beamGeoB], false) || beamGeoA.clone();
+  beamGeoA.dispose();
+  beamGeoB.dispose();
+
+  const beamInstMesh = new THREE.InstancedMesh(
+    mergedDoubleHelixBeamGeo,
+    matWindStreamShader,
+    MAX_BEAMS,
+  );
+  beamInstMesh.frustumCulled = false;
+  beamInstMesh.count = 0;
+  beamInstMesh.visible = false;
+  beamInstMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(beamInstMesh);
 
   interface ActiveBeam {
     active: boolean;
-    mesh: any;
     start: any;
     end: any;
     life: number;
@@ -943,15 +991,8 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
 
   const beamPool: ActiveBeam[] = [];
   for (let i = 0; i < MAX_BEAMS; i++) {
-    const grp = new THREE.Group();
-    const mA = new THREE.Mesh(beamGeoA, matWindStreamShader);
-    const mB = new THREE.Mesh(beamGeoB, matWindStreamShader);
-    grp.add(mA, mB);
-    grp.visible = false;
-    worldGroup.add(grp);
     beamPool.push({
       active: false,
-      mesh: grp,
       start: new THREE.Vector3(),
       end: new THREE.Vector3(),
       life: 0,
@@ -960,22 +1001,41 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     });
   }
 
-  // --- Pool 4: Polar GLSL Parry Shockwave Bursts & Tapered Diamond Steel Sparks ---
+  // --- Pool 4: Polar GLSL Parry Shockwave Bursts (14 -> 1 InstancedMesh) & Tapered Diamond Steel Sparks ---
+  const MAX_PARRY_RINGS = 14;
   interface ParryRing {
     active: boolean;
-    mesh: any;
+    pos: any;
     life: number;
     maxLife: number;
     maxScale: number;
   }
   const parryRings: ParryRing[] = [];
   const ringDiscGeo = new THREE.PlaneGeometry(0.72, 0.72);
-  for (let i = 0; i < 14; i++) {
-    const mesh = new THREE.Mesh(ringDiscGeo, matShockwaveBurstShader);
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    worldGroup.add(mesh);
-    parryRings.push({ active: false, mesh, life: 0, maxLife: 0.26, maxScale: 3.4 });
+  const parryRingProgressData = new Float32Array(MAX_PARRY_RINGS);
+  const parryRingProgressAttr = new THREE.InstancedBufferAttribute(parryRingProgressData, 1);
+  parryRingProgressAttr.setUsage(THREE.DynamicDrawUsage);
+  ringDiscGeo.setAttribute('aProgress', parryRingProgressAttr);
+
+  const parryRingInstMesh = new THREE.InstancedMesh(
+    ringDiscGeo,
+    matShockwaveBurstShader,
+    MAX_PARRY_RINGS,
+  );
+  parryRingInstMesh.frustumCulled = false;
+  parryRingInstMesh.count = 0;
+  parryRingInstMesh.visible = false;
+  parryRingInstMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(parryRingInstMesh);
+
+  for (let i = 0; i < MAX_PARRY_RINGS; i++) {
+    parryRings.push({
+      active: false,
+      pos: new THREE.Vector3(),
+      life: 0,
+      maxLife: 0.26,
+      maxScale: 3.4,
+    });
   }
 
   const MAX_PARRY_SPARKS = 96;
@@ -1005,6 +1065,43 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     });
   }
 
+  const combatVfx = G.combatVfx as CombatFeelVfxController | undefined;
+  if (combatVfx) {
+    combatVfx.registerBatch({
+      name: 'genji_shurikens',
+      meshes: [shurikenInstMesh, shurikenHaloMesh, shurikenTrailMesh],
+      getActiveCount: () => shurikenInstMesh.count,
+      legacyMeshesPerItem: 3,
+    });
+    combatVfx.registerBatch({
+      name: 'genji_sword_waves',
+      meshes: [waveInstMesh],
+      getActiveCount: () => waveInstMesh.count,
+      legacyMeshesPerItem: 1,
+      eliminatedSceneMeshes: MAX_WAVES - 1,
+    });
+    combatVfx.registerBatch({
+      name: 'genji_wind_beams',
+      meshes: [beamInstMesh],
+      getActiveCount: () => beamInstMesh.count,
+      legacyMeshesPerItem: 2,
+      eliminatedSceneMeshes: MAX_BEAMS * 2 - 1,
+    });
+    combatVfx.registerBatch({
+      name: 'genji_parry_rings',
+      meshes: [parryRingInstMesh],
+      getActiveCount: () => parryRingInstMesh.count,
+      legacyMeshesPerItem: 1,
+      eliminatedSceneMeshes: MAX_PARRY_RINGS - 1,
+    });
+    combatVfx.registerBatch({
+      name: 'genji_parry_sparks',
+      meshes: [sparkInstMesh],
+      getActiveCount: () => sparkInstMesh.count,
+      legacyMeshesPerItem: 1,
+    });
+  }
+
   function spawnParryBurst(worldPt: any, big = false) {
     let ring: ParryRing | null = null;
     for (let i = 0; i < parryRings.length; i++) {
@@ -1018,10 +1115,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     ring.maxLife = big ? 0.34 : 0.14;
     ring.life = ring.maxLife;
     ring.maxScale = big ? 4.2 : 0.44;
-    ring.mesh.position.copy(worldPt);
-    ring.mesh.quaternion.copy(G.camera.quaternion);
-    ring.mesh.scale.setScalar(big ? 0.25 : 0.12);
-    ring.mesh.visible = true;
+    ring.pos.copy(worldPt);
 
     const sparkCount = big ? 16 : 6;
     let spawned = 0;
@@ -1303,7 +1397,6 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     slot.life = duration;
     slot.maxLife = duration;
     slot.width = width;
-    slot.mesh.visible = true;
   }
 
   /**
@@ -1620,6 +1713,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     const cam = G.camera;
     _fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
     w.active = true;
+    w.scale = scale;
     w.pos.copy(cam.position).addScaledVector(_fwd, 1.0);
     w.dir.copy(_fwd);
     w.speed = 46;
@@ -1631,8 +1725,6 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     w.hitIds.clear();
     w.hitBldgIds.clear();
     w.hitColossus = false;
-    w.mesh.scale.setScalar(scale);
-    w.mesh.visible = true;
   }
 
   function triggerDeflectDrawSlash() {
@@ -2146,22 +2238,26 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
       shurikenTrailMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // 2. Update Custom GLSL Crescent Sword-Ki Waves (slices enemies, Colossal Boss & destructibles!)
+    // 2. Update Custom GLSL Crescent Sword-Ki Waves (1 GPU InstancedMesh instead of 18 Meshes!)
+    let waveIdx = 0;
     for (let i = 0; i < wavePool.length; i++) {
       const w = wavePool[i];
       if (!w.active) continue;
       w.life -= dt;
       if (w.life <= 0) {
         w.active = false;
-        w.mesh.visible = false;
         continue;
       }
       const stepDist = w.speed * dt;
       w.pos.addScaledVector(w.dir, stepDist);
-      w.mesh.position.copy(w.pos);
       _q1.setFromUnitVectors(_negZAxis, w.dir);
       _q2.setFromAxisAngle(_negZAxis, w.roll);
-      w.mesh.quaternion.copy(_q1).multiply(_q2);
+      _q1.multiply(_q2);
+      _scale.setScalar(w.scale);
+      _mat4.compose(w.pos, _q1, _scale);
+      waveInstMesh.setMatrixAt(waveIdx, _mat4);
+      waveAlphaData[waveIdx] = Math.min(1, w.life / Math.min(0.18, w.maxLife));
+      waveIdx++;
 
       if (w.damage > 0 && G.level && Array.isArray(G.level.destructibles)) {
         for (const bldg of G.level.destructibles) {
@@ -2214,46 +2310,72 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
         }
       }
     }
+    if (waveInstMesh.count !== waveIdx || waveIdx > 0) {
+      waveInstMesh.count = waveIdx;
+      waveInstMesh.visible = waveIdx > 0;
+      if (waveIdx > 0) {
+        waveInstMesh.instanceMatrix.needsUpdate = true;
+        waveAlphaAttr.needsUpdate = true;
+      }
+    }
 
-    // 3. Update Spiraling Wind-Vortex Swift Strike & Slipstream Trails
+    // 3. Update Spiraling Wind-Vortex Swift Strike & Slipstream Trails (1 GPU InstancedMesh instead of 56 Meshes!)
+    let beamIdx = 0;
     for (let i = 0; i < beamPool.length; i++) {
       const b = beamPool[i];
       if (!b.active) continue;
       b.life -= dt;
       if (b.life <= 0) {
         b.active = false;
-        b.mesh.visible = false;
         continue;
       }
       _v1.subVectors(b.end, b.start);
       const len = _v1.length();
       if (len < 0.05) {
         b.active = false;
-        b.mesh.visible = false;
         continue;
       }
       _v1.divideScalar(len);
-      b.mesh.position.copy(b.start);
       _q1.setFromUnitVectors(_zAxis, _v1);
       _q2.setFromAxisAngle(_zAxis, clockT * 14 + i);
-      b.mesh.quaternion.copy(_q1).multiply(_q2);
+      _q1.multiply(_q2);
       const fade = clamp01(b.life / b.maxLife);
-      b.mesh.scale.set(b.width * fade, b.width * fade, len);
+      _scale.set(b.width * fade, b.width * fade, len);
+      _mat4.compose(b.start, _q1, _scale);
+      beamInstMesh.setMatrixAt(beamIdx++, _mat4);
+    }
+    if (beamInstMesh.count !== beamIdx || beamIdx > 0) {
+      beamInstMesh.count = beamIdx;
+      beamInstMesh.visible = beamIdx > 0;
+      if (beamIdx > 0) {
+        beamInstMesh.instanceMatrix.needsUpdate = true;
+      }
     }
 
-    // 4. Update Polar GLSL Parry Shockwaves & Diamond Steel Sparks
+    // 4. Update Polar GLSL Parry Shockwaves (1 GPU InstancedMesh!) & Diamond Steel Sparks
+    let prIdx = 0;
     for (let i = 0; i < parryRings.length; i++) {
       const r = parryRings[i];
       if (!r.active) continue;
       r.life -= dt;
       if (r.life <= 0) {
         r.active = false;
-        r.mesh.visible = false;
         continue;
       }
-      const p = 1 - r.life / r.maxLife;
-      r.mesh.scale.setScalar(0.25 + p * r.maxScale);
-      r.mesh.quaternion.copy(camQuat);
+      const p = clamp01(1 - r.life / r.maxLife);
+      _scale.setScalar(0.25 + p * r.maxScale);
+      _mat4.compose(r.pos, camQuat, _scale);
+      parryRingInstMesh.setMatrixAt(prIdx, _mat4);
+      parryRingProgressData[prIdx] = p;
+      prIdx++;
+    }
+    if (parryRingInstMesh.count !== prIdx || prIdx > 0) {
+      parryRingInstMesh.count = prIdx;
+      parryRingInstMesh.visible = prIdx > 0;
+      if (prIdx > 0) {
+        parryRingInstMesh.instanceMatrix.needsUpdate = true;
+        parryRingProgressAttr.needsUpdate = true;
+      }
     }
 
     let spCount = 0;
@@ -2868,18 +2990,18 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
     aimPreviewMesh.count = 0;
     aimPreviewMesh.instanceMatrix.needsUpdate = true;
 
-    for (const w of wavePool) {
-      w.active = false;
-      w.mesh.visible = false;
-    }
-    for (const b of beamPool) {
-      b.active = false;
-      b.mesh.visible = false;
-    }
-    for (const r of parryRings) {
-      r.active = false;
-      r.mesh.visible = false;
-    }
+    for (const w of wavePool) w.active = false;
+    waveInstMesh.count = 0;
+    waveInstMesh.visible = false;
+
+    for (const b of beamPool) b.active = false;
+    beamInstMesh.count = 0;
+    beamInstMesh.visible = false;
+
+    for (const r of parryRings) r.active = false;
+    parryRingInstMesh.count = 0;
+    parryRingInstMesh.visible = false;
+
     for (const sp of sparkPool) sp.active = false;
     sparkInstMesh.count = 0;
     sparkInstMesh.instanceMatrix.needsUpdate = true;

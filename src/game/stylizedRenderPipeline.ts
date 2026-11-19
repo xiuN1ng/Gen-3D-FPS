@@ -90,21 +90,23 @@ export function enhanceMaterialStylized<T>(mat: T, opts: EnhanceStylizedOptions)
         float styUp = clamp((vec4(normal, 0.0) * viewMatrix).y * 0.5 + 0.5, 0.0, 1.0);
         float styDirLum = dot(reflectedLight.directDiffuse, vec3(0.299, 0.587, 0.114));
         float styShadowMask = 1.0 - smoothstep(0.02, 0.36, styDirLum);
-        vec3 styBounce = mix(vec3(0.18, 0.11, 0.10), vec3(0.13, 0.24, 0.44), styUp);
-        reflectedLight.indirectDiffuse += diffuseColor.rgb * styBounce * (0.30 * styShadowMask);
+        float stySunMask = smoothstep(0.18, 0.72, styDirLum);
+        vec3 styBounce = mix(vec3(0.19, 0.115, 0.105), vec3(0.135, 0.25, 0.46), styUp);
+        reflectedLight.indirectDiffuse += diffuseColor.rgb * styBounce * (0.31 * styShadowMask);
+        reflectedLight.directDiffuse *= mix(vec3(1.0), vec3(1.04, 1.01, 0.96), stySunMask);
 
         // Stylized two-band specular crispness on smoked kawara tiles, lacquer & polished stone
         float stySpecLum = dot(reflectedLight.directSpecular, vec3(0.299, 0.587, 0.114));
-        float stySpecBand = smoothstep(0.018, 0.19, stySpecLum);
-        reflectedLight.directSpecular *= mix(0.88, 1.24, stySpecBand);
+        float stySpecBand = smoothstep(0.016, 0.18, stySpecLum);
+        reflectedLight.directSpecular *= mix(0.88, 1.28, stySpecBand);
 
         // Grazing sky sheen + subtle stylized cobalt aerial perspective at distance
-        float styGrazing = pow(1.0 - styNdotV, 4.0) * (0.16 + 0.84 * styUp);
-        reflectedLight.indirectSpecular += vec3(0.045, 0.085, 0.16) * styGrazing * (1.0 - roughnessFactor * 0.62);
+        float styGrazing = pow(1.0 - styNdotV, 3.8) * (0.18 + 0.82 * styUp);
+        reflectedLight.indirectSpecular += vec3(0.05, 0.092, 0.17) * styGrazing * (1.0 - roughnessFactor * 0.62);
         float styAerial = smoothstep(54.0, 182.0, styViewDist);
         reflectedLight.indirectDiffuse = mix(
           reflectedLight.indirectDiffuse,
-          diffuseColor.rgb * vec3(0.24, 0.37, 0.64),
+          diffuseColor.rgb * vec3(0.25, 0.38, 0.65),
           styAerial * 0.20
         );
       }
@@ -116,13 +118,13 @@ export function enhanceMaterialStylized<T>(mat: T, opts: EnhanceStylizedOptions)
         vec3 styViewDir = normalize(vViewPosition);
         float styNdotV = clamp(dot(normal, styViewDir), 0.0, 1.0);
         float styUp = clamp((vec4(normal, 0.0) * viewMatrix).y * 0.5 + 0.5, 0.0, 1.0);
-        float styThreatRim = smoothstep(0.36, 0.85, 1.0 - styNdotV);
-        float stySharpRim = pow(1.0 - styNdotV, 2.85);
-        reflectedLight.indirectDiffuse += diffuseColor.rgb * mix(vec3(0.13, 0.17, 0.30), vec3(0.17, 0.28, 0.45), styUp) * 0.28;
+        float styThreatRim = smoothstep(0.34, 0.84, 1.0 - styNdotV);
+        float stySharpRim = pow(1.0 - styNdotV, 2.75);
+        reflectedLight.indirectDiffuse += diffuseColor.rgb * mix(vec3(0.13, 0.17, 0.30), vec3(0.18, 0.29, 0.46), styUp) * 0.29;
         float stySpecLum = dot(reflectedLight.directSpecular, vec3(0.299, 0.587, 0.114));
-        reflectedLight.directSpecular *= mix(0.95, 1.32, smoothstep(0.02, 0.22, stySpecLum));
-        totalEmissiveRadiance += vec3(1.0, 0.19, 0.13) * (styThreatRim * 0.28 + stySharpRim * 0.48)
-                               + vec3(0.32, 0.58, 0.96) * (stySharpRim * styUp * 0.15);
+        reflectedLight.directSpecular *= mix(0.95, 1.36, smoothstep(0.018, 0.20, stySpecLum));
+        totalEmissiveRadiance += vec3(1.0, 0.20, 0.13) * (styThreatRim * 0.30 + stySharpRim * 0.52)
+                               + vec3(0.36, 0.62, 0.98) * (stySharpRim * styUp * 0.16);
       }
     `;
   } else {
@@ -132,13 +134,13 @@ export function enhanceMaterialStylized<T>(mat: T, opts: EnhanceStylizedOptions)
         vec3 styViewDir = normalize(vViewPosition);
         float styNdotV = clamp(dot(normal, styViewDir), 0.0, 1.0);
         float styUp = clamp((vec4(normal, 0.0) * viewMatrix).y * 0.5 + 0.5, 0.0, 1.0);
-        float styHeroRim = pow(1.0 - styNdotV, 2.80);
-        vec3 styHeroFill = mix(vec3(0.12, 0.16, 0.25), vec3(0.16, 0.28, 0.46), styUp);
-        reflectedLight.indirectDiffuse += diffuseColor.rgb * styHeroFill * 0.22;
+        float styHeroRim = pow(1.0 - styNdotV, 2.70);
+        vec3 styHeroFill = mix(vec3(0.12, 0.16, 0.25), vec3(0.17, 0.29, 0.48), styUp);
+        reflectedLight.indirectDiffuse += diffuseColor.rgb * styHeroFill * 0.23;
         float stySpecLum = dot(reflectedLight.directSpecular, vec3(0.299, 0.587, 0.114));
-        reflectedLight.directSpecular *= mix(0.95, 1.28, smoothstep(0.02, 0.20, stySpecLum));
-        reflectedLight.indirectSpecular += mix(vec3(0.10, 0.20, 0.34), vec3(0.30, 0.52, 0.80), styUp)
-                                         * styHeroRim * (0.26 + 0.38 * (1.0 - roughnessFactor));
+        reflectedLight.directSpecular *= mix(0.95, 1.32, smoothstep(0.018, 0.19, stySpecLum));
+        reflectedLight.indirectSpecular += mix(vec3(0.12, 0.22, 0.36), vec3(0.34, 0.56, 0.84), styUp)
+                                         * styHeroRim * (0.28 + 0.40 * (1.0 - roughnessFactor));
       }
     `;
   }
@@ -152,7 +154,7 @@ export function enhanceMaterialStylized<T>(mat: T, opts: EnhanceStylizedOptions)
 
   m.customProgramCacheKey = () => {
     const base = prevCacheKey ? prevCacheKey() : m.type || 'std';
-    return `${base}|sty-ow-mr-v4-${opts.role}`;
+    return `${base}|sty-ow-mr-v5-${opts.role}`;
   };
 
   m.needsUpdate = true;

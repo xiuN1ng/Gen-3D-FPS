@@ -1,4 +1,5 @@
 import { SystemPipeline, World } from '../engine/ecs/index.ts';
+import type { CombatFeelVfxController } from './combatFeelVfx.ts';
 import type { EcsCombatBridge } from './ecsCombatBridge.ts';
 import type { SpatialArenaPhysics } from './spatialPhysicsAdapter.ts';
 
@@ -214,8 +215,8 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
 
   const renderLine = document.createElement('div');
   renderLine.style.cssText =
-    'color:rgba(255,195,110,0.92);font-size:10px;border-top:1px solid rgba(232,228,218,0.12);padding-top:4px;';
-  renderLine.textContent = 'DC: -- | Tris: -- | Scale: --';
+    'color:rgba(255,195,110,0.92);font-size:10px;white-space:pre;border-top:1px solid rgba(232,228,218,0.12);padding-top:4px;';
+  renderLine.textContent = 'DC: -- | Tris: -- | Scale: --\nInst: 0实 (0批) | 精简: -- Mesh';
 
   body.append(frameStatsLine, canvas, modeBtn, physLine, ecsEntityLine, ecsLine, renderLine);
   root.append(header, body);
@@ -397,11 +398,23 @@ export function createPerfHud(G: Record<string, any>): PerfHudController {
       `VFX  ${fxT.toFixed(2)} | Render ${gpuSubT.toFixed(2)} ms`;
 
     const rStats = G.render && typeof G.render.stats === 'function' ? G.render.stats() : null;
+    const cvfx = G.combatVfx as CombatFeelVfxController | undefined;
+    const batchSnap = cvfx ? cvfx.sampleTelemetry() : null;
     if (rStats) {
       const trisK = (Number(rStats.tris || 0) / 1000).toFixed(1);
       const qName = (G.quality && G.quality.name) || 'auto';
       const scale = Number(rStats.scale || 1).toFixed(2);
-      renderLine.textContent = `DC: ${rStats.calls ?? 0} | Tris: ${trisK}k | ${qName} (${scale}x)`;
+      if (batchSnap) {
+        renderLine.textContent =
+          `DC: ${rStats.calls ?? 0} (-${batchSnap.savedDrawCalls}批 · 峰-${batchSnap.peakSavedDrawCalls}) | Tris: ${trisK}k\n` +
+          `Inst: ${batchSnap.activeInstances}实 (${batchSnap.instancedDrawCalls}批) | 精简 -${batchSnap.eliminatedSceneMeshes} Mesh · ${qName}(${scale}x)`;
+      } else {
+        renderLine.textContent = `DC: ${rStats.calls ?? 0} | Tris: ${trisK}k | ${qName} (${scale}x)`;
+      }
+    } else if (batchSnap) {
+      renderLine.textContent =
+        `DC: -- (-${batchSnap.savedDrawCalls}批 · 峰-${batchSnap.peakSavedDrawCalls})\n` +
+        `Inst: ${batchSnap.activeInstances}实 (${batchSnap.instancedDrawCalls}批) | 精简 -${batchSnap.eliminatedSceneMeshes} Mesh`;
     }
   }
 
