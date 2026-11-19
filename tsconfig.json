@@ -25,5 +25,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["dist", ".agents", "tests/e2e"]
+  "exclude": ["dist", ".agents"]
 }
