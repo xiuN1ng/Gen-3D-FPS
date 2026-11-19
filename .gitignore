@@ -63,3 +63,6 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Agent coordination & teamwork state
+.agents/
