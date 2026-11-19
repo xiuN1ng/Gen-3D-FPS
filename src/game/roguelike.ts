@@ -275,6 +275,42 @@ export const UPGRADE_CATALOG: readonly GenjiUpgradeDef[] = [
     maxStacks: 4,
     description: '最大生命值 +45，立即恢复 65 点生命，手里剑忍具匣容量 +6。',
   },
+  {
+    id: 'shuriken_thunder',
+    title: '鸣雷·雷切破魔镖',
+    subtitle: '风魔秘传 · 雷光贯首',
+    archetype: 'shuriken',
+    rarity: 'rare',
+    maxStacks: 2,
+    description: '手里剑基础伤害 +5、镖速提升 8%，命中敌军弱点时额外激荡雷切火花充能龙神之剑。',
+  },
+  {
+    id: 'swift_gale',
+    title: '疾风·踏云缩地印',
+    subtitle: '疾风秘传 · 瞬步连环',
+    archetype: 'mobility',
+    rarity: 'rare',
+    maxStacks: 2,
+    description: '【影】（Shift）基础冷却缩短 0.85 秒，身法移速额外提升 6%。',
+  },
+  {
+    id: 'deflect_tempest',
+    title: '风神·回天剑幕',
+    subtitle: '心眼秘传 · 罡风倍反',
+    archetype: 'deflect',
+    rarity: 'rare',
+    maxStacks: 2,
+    description: '【闪】（E）反弹伤害倍率额外 +0.45，并附带 +35 点收刀剑压冲击。',
+  },
+  {
+    id: 'dragon_ascension',
+    title: '真龙·天丛云剑意',
+    subtitle: '终极奥义 · 神威镇世',
+    archetype: 'dragon',
+    rarity: 'legendary',
+    maxStacks: 1,
+    description: '【斩】（Q）拔刀基础持续时间延长 1.2 秒，升龙剑气伤害额外提升 +45 点！',
+  },
 ];
 
 export function createBaseGenjiStats(): GenjiStats {
@@ -358,6 +394,11 @@ export function computeGenjiBuildStats(stacks: Record<string, number>): GenjiSta
     s.shurikenSpeed *= 1 + 0.16 * k;
     s.reloadTime = Math.max(0.48, s.reloadTime * Math.pow(0.86, k));
   }
+  if (n('shuriken_thunder') > 0) {
+    const k = n('shuriken_thunder');
+    s.shurikenDamage += 5 * k;
+    s.shurikenSpeed *= 1 + 0.08 * k;
+  }
 
   if (n('swift_phantom') > 0) {
     s.swiftStrikeGhostFireCount += 4 * n('swift_phantom');
@@ -371,6 +412,11 @@ export function computeGenjiBuildStats(stacks: Record<string, number>): GenjiSta
     const k = n('swift_aegis');
     s.swiftStrikeShieldOnHit += 16 * k;
     s.maxHealth += 25 * k;
+  }
+  if (n('swift_gale') > 0) {
+    const k = n('swift_gale');
+    s.swiftStrikeCooldown = Math.max(3.6, s.swiftStrikeCooldown - 0.85 * k);
+    s.moveSpeedMultiplier *= 1 + 0.06 * k;
   }
   if (n('cyber_triple_jump') > 0) {
     s.maxAirJumps = 2;
@@ -392,6 +438,11 @@ export function computeGenjiBuildStats(stacks: Record<string, number>): GenjiSta
     s.deflectCooldown = Math.max(3.2, s.deflectCooldown - 1.1 * k);
     s.deflectHealPerBolt += 12 * k;
   }
+  if (n('deflect_tempest') > 0) {
+    const k = n('deflect_tempest');
+    s.deflectMultiplier = +(s.deflectMultiplier + 0.45 * k).toFixed(2);
+    s.deflectShockwaveDamage += 35 * k;
+  }
 
   if (n('dragon_wave') > 0) {
     s.dragonbladeWaveDamage = 210;
@@ -410,6 +461,10 @@ export function computeGenjiBuildStats(stacks: Record<string, number>): GenjiSta
     const k = n('dragon_reactor');
     s.ultChargeMultiplier += 0.28 * k;
     s.dragonbladeSlashDamage += 30 * k;
+  }
+  if (n('dragon_ascension') > 0) {
+    s.dragonbladeDuration += 1.2 * n('dragon_ascension');
+    s.dragonbladeWaveDamage += 45 * n('dragon_ascension');
   }
   if (n('vitality_overclock') > 0) {
     const k = n('vitality_overclock');
@@ -508,6 +563,26 @@ export const GUNNER_UPGRADE_OVERRIDES: Record<
     title: '重装护甲·扩容弹仓',
     subtitle: '生存核心 · 重装补给',
     description: '最大生命值 +50，立即恢复生命，脉冲步枪弹鼓容量额外 +10。',
+  },
+  shuriken_thunder: {
+    title: '电弧膛线·弱点超载',
+    subtitle: '脉冲改装 · 高压穿甲',
+    description: '重型脉冲步枪单发伤害 +3，弹丸初速提升 8%，命中弱点时额外回充战术目镜能量。',
+  },
+  swift_gale: {
+    title: '战术滑轨·急袭推进',
+    subtitle: '机动挂件 · 爆破扩域',
+    description: '【战术疾跑】（Shift）移速倍率再 +8%，【螺旋飞弹】爆炸杀伤半径扩大 +0.45 米。',
+  },
+  deflect_tempest: {
+    title: '纳米增幅·超频信标',
+    subtitle: '力场改装 · 矩阵扩域',
+    description: '【生物力场】（E）内武器射速加成额外 +10%，力场覆盖半径扩大 +0.9 米。',
+  },
+  dragon_ascension: {
+    title: '歼星目镜·全域火控',
+    subtitle: '终极奥义 · 超频锁定',
+    description: '【战术目镜】（Q）持续时间延长 1.2 秒，目镜期间连射攻速加成额外提升 +14%！',
   },
 };
 
@@ -1437,7 +1512,12 @@ export function computeFujiProfileSample(
 // COLOSSAL GIANT BOSS (`荒神大天狗 · 八岐鬼王丸`) PURE STATE & WEAKSPOT RULES
 // ============================================================================
 
-export type ColossalBossAttackKind = 'odachi_slam' | 'flame_crescents' | 'raijin_barrage' | 'terrace_leap';
+export type ColossalBossAttackKind =
+  | 'odachi_slam'
+  | 'flame_crescents'
+  | 'raijin_barrage'
+  | 'terrace_leap'
+  | 'thunder_judgment';
 
 export interface ColossalBossState {
   name: string;
@@ -1454,12 +1534,17 @@ export interface ColossalBossState {
   activeAttack: ColossalBossAttackKind | null;
   attackTimer: number;
   attackIndex: number;
+  coreExposed?: boolean;
+  coreHp?: number;
+  coreMaxHp?: number;
+  interruptCount?: number;
 }
 
 export interface ColossalBossHitOutcome {
   totalDamage: number;
   orbShattered: boolean;
   shatteredOrbIndex: number;
+  coreInterrupted?: boolean;
   phaseChanged: boolean;
   newPhase: 1 | 2 | 3;
   killed: boolean;
@@ -1469,6 +1554,7 @@ export function createColossalBossState(waveNum: number): ColossalBossState {
   const w = Math.max(1, Math.floor(waveNum));
   const maxHp = Math.round(1550 + (w - 1) * 280);
   const orbMaxHp = Math.round(95 + (w - 1) * 18);
+  const coreMaxHp = Math.round(115 + (w - 1) * 22);
   return {
     name: '八岐鬼王丸',
     title: '荒神大天狗 · 巨型妖将',
@@ -1484,7 +1570,25 @@ export function createColossalBossState(waveNum: number): ColossalBossState {
     activeAttack: null,
     attackTimer: 0,
     attackIndex: 0,
+    coreExposed: false,
+    coreHp: 0,
+    coreMaxHp,
+    interruptCount: 0,
   };
+}
+
+/**
+ * Initiates the Colossal Boss's Phase 2/3 signature `thunder_judgment` (`雷神天罚 · 荒神雷核暴露`) channel:
+ * Exposes the central Raijin chest heart-core (`hitOrbIndex === 4`) during the `1.18s` windup window
+ * so skilled players can shatter the channeling core to interrupt the lightning pillars and stagger the boss!
+ */
+export function beginColossalThunderJudgment(state: ColossalBossState): void {
+  const coreMax = state.coreMaxHp ?? Math.round(115 + (Math.max(1, state.waveNum) - 1) * 22);
+  state.coreMaxHp = coreMax;
+  state.coreHp = coreMax;
+  state.coreExposed = true;
+  state.activeAttack = 'thunder_judgment';
+  state.attackTimer = 1.18;
 }
 
 export function stepColossalBossDamage(
@@ -1497,6 +1601,7 @@ export function stepColossalBossDamage(
       totalDamage: 0,
       orbShattered: false,
       shatteredOrbIndex: -1,
+      coreInterrupted: false,
       phaseChanged: false,
       newPhase: state.phase,
       killed: state.hp <= 0,
@@ -1506,8 +1611,23 @@ export function stepColossalBossDamage(
   let totalDamage = Math.max(1, Math.round(rawDamage));
   let orbShattered = false;
   let shatteredOrbIndex = -1;
+  let coreInterrupted = false;
 
-  if (
+  if (hitOrbIndex === 4 && state.coreExposed && (state.coreHp ?? 0) > 0) {
+    // Exposed Phase 2/3 Raijin Heart Core (`荒神雷核`) takes 1.5x precision damage and can interrupt `thunder_judgment`!
+    totalDamage = Math.round(rawDamage * 1.5);
+    state.coreHp = Math.max(0, (state.coreHp ?? 0) - rawDamage);
+    if (state.coreHp <= 0) {
+      state.coreExposed = false;
+      coreInterrupted = true;
+      const backlash = Math.round(state.maxHp * 0.08);
+      totalDamage += backlash;
+      state.stunTimer = Math.max(state.stunTimer, 2.0);
+      state.activeAttack = null;
+      state.attackTimer = 0;
+      state.interruptCount = (state.interruptCount ?? 0) + 1;
+    }
+  } else if (
     hitOrbIndex >= 0 &&
     hitOrbIndex < state.orbsAlive.length &&
     state.orbsAlive[hitOrbIndex]
@@ -1524,6 +1644,7 @@ export function stepColossalBossDamage(
       state.stunTimer = Math.max(state.stunTimer, 2.2);
       state.activeAttack = null;
       state.attackTimer = 0;
+      state.coreExposed = false;
     }
   } else if (state.stunTimer > 0) {
     // Staggered colossal boss takes +25% exposed finisher damage
@@ -1545,6 +1666,7 @@ export function stepColossalBossDamage(
     totalDamage: applied,
     orbShattered,
     shatteredOrbIndex,
+    coreInterrupted,
     phaseChanged: state.phase !== prevPhase,
     newPhase: state.phase,
     killed: state.hp <= 0,
@@ -2176,6 +2298,11 @@ export function computeGunnerBuildStats(stacks: Record<string, number>): GunnerS
     s.helixSpeed *= 1 + 0.12 * k;
     s.reloadTime = Math.max(0.48, s.reloadTime * Math.pow(0.84, k));
   }
+  if (n('shuriken_thunder') > 0) {
+    const k = n('shuriken_thunder');
+    s.rifleDamage += 3 * k;
+    s.rifleProjectileSpeed *= 1 + 0.08 * k;
+  }
 
   if (n('swift_phantom') > 0) {
     s.helixCooldown = Math.max(2.4, s.helixCooldown - 0.9 * n('swift_phantom'));
@@ -2189,6 +2316,11 @@ export function computeGunnerBuildStats(stacks: Record<string, number>): GunnerS
     const k = n('swift_aegis');
     s.maxHealth += 35 * k;
     s.bioticHealPerSec += 14 * k;
+  }
+  if (n('swift_gale') > 0) {
+    const k = n('swift_gale');
+    s.sprintSpeedMultiplier += 0.08 * k;
+    s.helixSplashRadius += 0.45 * k;
   }
   if (n('cyber_triple_jump') > 0) {
     s.maxAirJumps = 2; // Upgraded triple exo-thruster jump!
@@ -2207,6 +2339,11 @@ export function computeGunnerBuildStats(stacks: Record<string, number>): GunnerS
     s.bioticDuration += 0.85 * k;
     s.bioticCooldown = Math.max(5.5, s.bioticCooldown - 1.4 * k);
   }
+  if (n('deflect_tempest') > 0) {
+    const k = n('deflect_tempest');
+    s.bioticFireRateBonus += 0.10 * k;
+    s.bioticRadius += 0.9 * k;
+  }
 
   if (n('dragon_wave') > 0) {
     s.visorMicroMissiles = true;
@@ -2223,6 +2360,10 @@ export function computeGunnerBuildStats(stacks: Record<string, number>): GunnerS
     const k = n('dragon_reactor');
     s.ultChargeMultiplier += 0.28 * k;
     s.rifleDamage += 4 * k;
+  }
+  if (n('dragon_ascension') > 0) {
+    s.visorDuration += 1.2 * n('dragon_ascension');
+    s.visorFireRateBonus += 0.14 * n('dragon_ascension');
   }
   if (n('vitality_overclock') > 0) {
     const k = n('vitality_overclock');
@@ -2515,6 +2656,26 @@ export const HANZO_UPGRADE_OVERRIDES: Record<
     subtitle: '护身秘传 · 根基稳固',
     description: '最大生命值 +48，立即恢复生命，拉弓蓄力期间移动减速大幅减轻。',
   },
+  shuriken_thunder: {
+    title: '雷鸣镝矢·贯首神射',
+    subtitle: '岚弓秘技 · 惊雷破空',
+    description: '蓄力弓与岚矢爆头暴击倍率 +0.18，满弦箭矢飞行初速额外提升 8%。',
+  },
+  swift_gale: {
+    title: '神足·踏风连跃',
+    subtitle: '宗家身法 · 瞬影挽弓',
+    description: '空中【跃步】（Space）冷却缩短 0.55 秒，满弦箭矢基础伤害额外提升 +14 点。',
+  },
+  deflect_tempest: {
+    title: '天籁·扩域强音矢',
+    subtitle: '音障秘传 · 洞穿万象',
+    description: '【音障探测矢】领域易伤倍率额外 +10%，声呐透视持续时间延长 1.0 秒。',
+  },
+  dragon_ascension: {
+    title: '祖灵双龙·裂界天翔',
+    subtitle: '终极奥义 · 双龙显圣',
+    description: '【龙魂双生】（Q）穿墙蚀魂每秒伤害提升 +65 点，双龙推进速度提升 15%！',
+  },
 };
 
 export function createBaseHanzoStats(): HanzoStats {
@@ -2592,6 +2753,11 @@ export function computeHanzoBuildStats(stacks: Record<string, number>): HanzoSta
     s.minArrowSpeed *= 1 + 0.16 * k;
     s.stormArrowInterval = Math.max(0.13, s.stormArrowInterval * Math.pow(0.85, k));
   }
+  if (n('shuriken_thunder') > 0) {
+    const k = n('shuriken_thunder');
+    s.headshotMultiplier = +(s.headshotMultiplier + 0.18 * k).toFixed(2);
+    s.maxArrowSpeed *= 1 + 0.08 * k;
+  }
 
   if (n('swift_phantom') > 0) {
     const k = n('swift_phantom');
@@ -2609,6 +2775,11 @@ export function computeHanzoBuildStats(stacks: Record<string, number>): HanzoSta
     const k = n('swift_aegis');
     s.maxHealth += 32 * k;
     s.lungeShieldHeal += 18 * k;
+  }
+  if (n('swift_gale') > 0) {
+    const k = n('swift_gale');
+    s.lungeCooldown = Math.max(2.0, s.lungeCooldown - 0.55 * k);
+    s.maxArrowDamage += 14 * k;
   }
   if (n('cyber_triple_jump') > 0) {
     s.maxAirJumps = 2;
@@ -2629,6 +2800,11 @@ export function computeHanzoBuildStats(stacks: Record<string, number>): HanzoSta
     s.stormArrowCooldown = Math.max(3.8, s.stormArrowCooldown - 1.3 * k);
     s.stormArrowDuration += 1.0 * k;
   }
+  if (n('deflect_tempest') > 0) {
+    const k = n('deflect_tempest');
+    s.sonicAmpMultiplier = +(s.sonicAmpMultiplier + 0.10 * k).toFixed(2);
+    s.sonicDuration += 1.0 * k;
+  }
 
   if (n('dragon_wave') > 0) {
     s.dragonstrikeRadius *= 1.40;
@@ -2646,6 +2822,10 @@ export function computeHanzoBuildStats(stacks: Record<string, number>): HanzoSta
     const k = n('dragon_reactor');
     s.ultChargeMultiplier += 0.28 * k;
     s.maxArrowDamage += 18 * k;
+  }
+  if (n('dragon_ascension') > 0) {
+    s.dragonstrikeDps += 65 * n('dragon_ascension');
+    s.dragonstrikeSpeed *= 1 + 0.15 * n('dragon_ascension');
   }
   if (n('vitality_overclock') > 0) {
     const k = n('vitality_overclock');
@@ -2943,3 +3123,326 @@ export function evaluateStylizedRimFactor(ndotv: number, power = 2.8, strength =
   const s = Math.max(0, Number.isFinite(strength) ? strength : 1.0);
   return Math.pow(1 - clampedNdotV, p) * s;
 }
+
+// ============================================================================
+// CROSS-ARCHETYPE DUAL-SYNERGY RESONANCE ENGINE (`双生流派羁绊 · 三英雄专属共鸣`)
+// ============================================================================
+
+export type SynergyPairId =
+  | 'gale_volley'       // shuriken + mobility
+  | 'mirror_barrage'    // shuriken + deflect
+  | 'phantom_ward'      // mobility + deflect
+  | 'dragon_munitions'  // shuriken + dragon
+  | 'sky_dragon'        // mobility + dragon
+  | 'zenith_resonance'; // deflect + dragon
+
+export type SynergyTier = 0 | 1 | 2;
+
+export interface SynergyHeroCopy {
+  title: string;
+  tier1Desc: string;
+  tier2Desc: string;
+}
+
+export interface SynergyPairDef {
+  id: SynergyPairId;
+  archA: UpgradeArchetype;
+  archB: UpgradeArchetype;
+  genji: SynergyHeroCopy;
+  gunner: SynergyHeroCopy;
+  hanzo: SynergyHeroCopy;
+}
+
+export interface ActiveSynergyDescriptor {
+  id: SynergyPairId;
+  archA: UpgradeArchetype;
+  archB: UpgradeArchetype;
+  tier: 1 | 2;
+  title: string;
+  badgeText: string;
+  description: string;
+}
+
+export interface BuildSynergySummary {
+  archetypeCounts: Record<UpgradeArchetype, number>;
+  tiers: Record<SynergyPairId, SynergyTier>;
+  active: ActiveSynergyDescriptor[];
+  /** `gale_volley`: Shift/Lunge/Sprint empowers next primary/secondary attack & reloads */
+  mobilityEmpowerRatio: number;
+  /** `mirror_barrage`: Deflect parry bonus homing kunai / Biotic EMP amp / Sonic-Storm burst */
+  deflectOffenseBonus: number;
+  parryBonusKunai: number;
+  /** `phantom_ward`: Paired skill heal/ward & mutual cooldown refund (seconds) */
+  pairedWardHeal: number;
+  pairedCdRefundSec: number;
+  /** `dragon_munitions`: Weakspot / Overcharge / Headshot AoE Spirit-Ki burst damage */
+  precisionBurstDamage: number;
+  /** `sky_dragon`: Airborne damage multiplier bonus (`+0.24`..`+0.42`) & Ult mobility boost */
+  aerialDamageBonus: number;
+  /** `zenith_resonance`: Ultimate cast AoE shockwave / auto-field & parry extra Ult gain */
+  ultCastPulseDamage: number;
+  extraParryUltGain: number;
+}
+
+export interface DraftSynergyPreview {
+  synergyId: SynergyPairId;
+  kind: 'unlock' | 'upgrade';
+  nextTier: 1 | 2;
+  title: string;
+  badgeLabel: string;
+}
+
+export const SYNERGY_CATALOG: readonly SynergyPairDef[] = [
+  {
+    id: 'gale_volley',
+    archA: 'shuriken',
+    archB: 'mobility',
+    genji: {
+      title: '风雷踏影',
+      tier1Desc: '施展【影】立即装满手里剑，并在 3 秒内赋予武器 +30% 雷切增伤',
+      tier2Desc: '施展【影】装满弹匣，3 秒内赋予武器 +50% 雷切增伤并激荡破甲电弧',
+    },
+    gunner: {
+      title: '机动火力链',
+      tier1Desc: '【战术疾跑】每秒自动装填 8 发弹药，冲刺后 3 秒内武备伤害 +25%',
+      tier2Desc: '【战术疾跑】每秒装填 14 发弹药，冲刺后 3 秒内武备伤害 +42%',
+    },
+    hanzo: {
+      title: '凌云满弦',
+      tier1Desc: '施展空中【跃步】后 3 秒内弓矢伤害提升 +28%，拉弓蓄力提速',
+      tier2Desc: '施展空中【跃步】后 3 秒内弓矢伤害提升 +45%，瞬间凝聚凌云劲矢',
+    },
+  },
+  {
+    id: 'mirror_barrage',
+    archA: 'shuriken',
+    archB: 'deflect',
+    genji: {
+      title: '镜花碎刃',
+      tier1Desc: '【闪】每次成功弹反自动追射 2 枚追踪苦无，并提升投掷攻速',
+      tier2Desc: '【闪】每次成功弹反自动追射 4 枚追踪苦无，大幅强化返刃压制',
+    },
+    gunner: {
+      title: '超导电磁幕',
+      tier1Desc: '处于【生物力场】内射击额外附加 +20% 破盾电磁伤害，弱点命中回弹',
+      tier2Desc: '处于【生物力场】内射击额外附加 +36% 破盾电磁伤害，弱点回弹翻倍',
+    },
+    hanzo: {
+      title: '音岚共鸣',
+      tier1Desc: '【岚矢】命中【音障】声呐内敌军时引爆 68 点声波震荡伤害',
+      tier2Desc: '【岚矢】命中【音障】声呐内敌军时引爆 110 点声波震荡并返还 1 支岚矢',
+    },
+  },
+  {
+    id: 'phantom_ward',
+    archA: 'mobility',
+    archB: 'deflect',
+    genji: {
+      title: '幻影水月',
+      tier1Desc: '施展【影】或【闪】时恢复 22 点生命，并缩减另一技能 1.2 秒冷却',
+      tier2Desc: '施展【影】或【闪】时恢复 38 点生命，并缩减另一技能 2.0 秒冷却',
+    },
+    gunner: {
+      title: '纳米急行军',
+      tier1Desc: '部署【生物力场】立即恢复 28 点生命并缩减【螺旋飞弹】1.6 秒冷却',
+      tier2Desc: '部署【生物力场】立即恢复 46 点生命并缩减【螺旋飞弹】2.6 秒冷却',
+    },
+    hanzo: {
+      title: '风林幻身',
+      tier1Desc: '激发【音障】或【岚矢】立即恢复 24 点生命并缩减【跃步】1.4 秒冷却',
+      tier2Desc: '激发【音障】或【岚矢】立即恢复 42 点生命并直接重置【跃步】冷却',
+    },
+  },
+  {
+    id: 'dragon_munitions',
+    archA: 'shuriken',
+    archB: 'dragon',
+    genji: {
+      title: '龙息淬镖',
+      tier1Desc: '弱点命中迸发 60 点苍翠龙息范围冲击，并额外充能终极技',
+      tier2Desc: '弱点命中迸发 98 点苍翠龙息范围冲击，终极技充能效率大幅跃升',
+    },
+    gunner: {
+      title: '聚变爆破弹',
+      tier1Desc: '弱点或满过载射击触发 64 点电浆范围爆轰（冷却 0.9 秒）',
+      tier2Desc: '弱点或满过载射击触发 105 点电浆范围爆轰（冷却 0.7 秒）',
+    },
+    hanzo: {
+      title: '龙魂鸣镝',
+      tier1Desc: '爆头或满弦重箭命中迸发 72 点苍龙灵波范围伤害',
+      tier2Desc: '爆头或满弦重箭命中迸发 118 点苍龙灵波范围伤害并震慑周围敌军',
+    },
+  },
+  {
+    id: 'sky_dragon',
+    archA: 'mobility',
+    archB: 'dragon',
+    genji: {
+      title: '天翔龙闪',
+      tier1Desc: '腾空与飞檐状态下造成伤害提升 +24%，空中淘汰额外充能 5% 龙刃',
+      tier2Desc: '腾空与飞檐状态下造成伤害提升 +40%，空中淘汰额外充能 9% 龙刃',
+    },
+    gunner: {
+      title: '制空歼灭者',
+      tier1Desc: '滞空射击与飞弹伤害提升 +24%，【战术目镜】期间移速额外提升',
+      tier2Desc: '滞空射击与飞弹伤害提升 +40%，空中淘汰额外返还飞弹冷却',
+    },
+    hanzo: {
+      title: '神鹫降龙',
+      tier1Desc: '腾空挽弓与跃步射击伤害提升 +24%，空中命中额外充能双龙奥义',
+      tier2Desc: '腾空挽弓与跃步射击伤害提升 +40%，空中淘汰立即激荡苍蓝龙气',
+    },
+  },
+  {
+    id: 'zenith_resonance',
+    archA: 'deflect',
+    archB: 'dragon',
+    genji: {
+      title: '明镜真龙',
+      tier1Desc: '拔刀开启【斩】瞬间爆发 140 点居合龙威震波，弹反额外充能 +6%',
+      tier2Desc: '拔刀开启【斩】瞬间爆发 225 点居合龙威震波，弹反额外充能 +10%',
+    },
+    gunner: {
+      title: '目镜力场共振',
+      tier1Desc: '开启【战术目镜】自动在脚下展开生物力场，并爆发 140 点震荡脉冲',
+      tier2Desc: '开启【战术目镜】自动展开强化生物力场，并爆发 225 点破盾脉冲',
+    },
+    hanzo: {
+      title: '双龙岚音阵',
+      tier1Desc: '释放【龙魂双生】立即刷新【岚矢】冷却，并爆发 140 点声呐震波',
+      tier2Desc: '释放【龙魂双生】刷新【岚矢】与【音矢】冷却，并爆发 225 点龙吟震波',
+    },
+  },
+];
+
+const UPGRADE_ARCHETYPE_MAP: Record<string, UpgradeArchetype> = (() => {
+  const map: Record<string, UpgradeArchetype> = {};
+  for (const u of UPGRADE_CATALOG) {
+    map[u.id] = u.archetype;
+  }
+  return map;
+})();
+
+/**
+ * Pure deterministic solver for active Cross-Archetype Dual-Synergy Resonances (`双生流派羁绊`).
+ * - Tier I unlocks when `count(archA) >= 1 && count(archB) >= 1`.
+ * - Tier II awakens when `Tier I` is met AND `count(archA) + count(archB) >= 4`.
+ */
+export function evaluateBuildSynergies(
+  stacks: Record<string, number>,
+  heroClass: HeroClassId = 'genji'
+): BuildSynergySummary {
+  const archetypeCounts: Record<UpgradeArchetype, number> = {
+    shuriken: 0,
+    mobility: 0,
+    deflect: 0,
+    dragon: 0,
+  };
+
+  for (const [id, rawVal] of Object.entries(stacks)) {
+    const k = Math.max(0, Math.floor(rawVal || 0));
+    if (k <= 0) continue;
+    const arch = UPGRADE_ARCHETYPE_MAP[id];
+    if (arch) {
+      archetypeCounts[arch] += k;
+    }
+  }
+
+  const tiers: Record<SynergyPairId, SynergyTier> = {
+    gale_volley: 0,
+    mirror_barrage: 0,
+    phantom_ward: 0,
+    dragon_munitions: 0,
+    sky_dragon: 0,
+    zenith_resonance: 0,
+  };
+
+  const active: ActiveSynergyDescriptor[] = [];
+
+  for (const def of SYNERGY_CATALOG) {
+    const cA = archetypeCounts[def.archA];
+    const cB = archetypeCounts[def.archB];
+    if (cA >= 1 && cB >= 1) {
+      const tier: 1 | 2 = cA + cB >= 4 ? 2 : 1;
+      tiers[def.id] = tier;
+      const copy =
+        heroClass === 'gunner' ? def.gunner : heroClass === 'hanzo' ? def.hanzo : def.genji;
+      active.push({
+        id: def.id,
+        archA: def.archA,
+        archB: def.archB,
+        tier,
+        title: copy.title,
+        badgeText: tier === 2 ? `${copy.title} II` : `${copy.title} I`,
+        description: tier === 2 ? copy.tier2Desc : copy.tier1Desc,
+      });
+    }
+  }
+
+  const tGale = tiers.gale_volley;
+  const tMirror = tiers.mirror_barrage;
+  const tWard = tiers.phantom_ward;
+  const tDragonMun = tiers.dragon_munitions;
+  const tSky = tiers.sky_dragon;
+  const tZenith = tiers.zenith_resonance;
+
+  return {
+    archetypeCounts,
+    tiers,
+    active,
+    mobilityEmpowerRatio: tGale === 2 ? 0.45 : tGale === 1 ? 0.28 : 0,
+    deflectOffenseBonus: tMirror === 2 ? 0.36 : tMirror === 1 ? 0.20 : 0,
+    parryBonusKunai: tMirror === 2 ? 4 : tMirror === 1 ? 2 : 0,
+    pairedWardHeal: tWard === 2 ? 40 : tWard === 1 ? 24 : 0,
+    pairedCdRefundSec: tWard === 2 ? 2.1 : tWard === 1 ? 1.3 : 0,
+    precisionBurstDamage: tDragonMun === 2 ? 105 : tDragonMun === 1 ? 65 : 0,
+    aerialDamageBonus: tSky === 2 ? 0.40 : tSky === 1 ? 0.24 : 0,
+    ultCastPulseDamage: tZenith === 2 ? 225 : tZenith === 1 ? 140 : 0,
+    extraParryUltGain: tZenith === 2 ? 10 : tZenith === 1 ? 6 : 0,
+  };
+}
+
+/**
+ * Predicts whether drafting `candidateCardId` unlocks a new Tier I synergy or upgrades an active
+ * synergy to Tier II, enabling crisp golden resonance badges right on the 3-choice draft cards!
+ */
+export function computeDraftCardSynergyPreview(
+  currentStacks: Record<string, number>,
+  candidateCardId: string,
+  heroClass: HeroClassId = 'genji'
+): DraftSynergyPreview | null {
+  const before = evaluateBuildSynergies(currentStacks, heroClass);
+  const nextStacks: Record<string, number> = {
+    ...currentStacks,
+    [candidateCardId]: Math.max(0, Math.floor(currentStacks[candidateCardId] || 0)) + 1,
+  };
+  const after = evaluateBuildSynergies(nextStacks, heroClass);
+
+  // Prioritize newly unlocked Tier I synergies first, then Tier I -> II upgrades
+  for (const desc of after.active) {
+    const prevTier = before.tiers[desc.id];
+    if (prevTier === 0 && desc.tier >= 1) {
+      return {
+        synergyId: desc.id,
+        kind: 'unlock',
+        nextTier: desc.tier,
+        title: desc.title,
+        badgeLabel: `羁绊激活 · ${desc.title}`,
+      };
+    }
+  }
+  for (const desc of after.active) {
+    const prevTier = before.tiers[desc.id];
+    if (prevTier === 1 && desc.tier === 2) {
+      return {
+        synergyId: desc.id,
+        kind: 'upgrade',
+        nextTier: 2,
+        title: desc.title,
+        badgeLabel: `羁绊升阶 · ${desc.title} II`,
+      };
+    }
+  }
+  return null;
+}
+

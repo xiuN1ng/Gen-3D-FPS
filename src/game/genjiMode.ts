@@ -11,11 +11,13 @@ import {
   addUltimateDamageCharge,
   applyGenjiEliminationReset,
   applyHanzoEliminationReset,
+  beginColossalThunderJudgment,
   canSwitchHeroInState,
   checkSweptBoltDeflect,
   clamp01,
   clampActorToAirWall,
   computeDeflectDirection,
+  computeDraftCardSynergyPreview,
   computeEnemyLocatorInfo,
   computeGenjiBuildStats,
   computeGunnerBuildStats,
@@ -31,10 +33,12 @@ import {
   createBaseHanzoStats,
   createColossalBossState,
   draftUpgradeChoices,
+  evaluateBuildSynergies,
   isProjectileOutOfPlayableBounds,
   resolveUpgradeCardForHero,
   stepColossalBossDamage,
   stepCyberAgility,
+  type BuildSynergySummary,
   type ColossalBossState,
   type CyberAgilityState,
   type GenjiBuildStats,
@@ -69,6 +73,10 @@ import {
   createCombatFeelVfx,
   type CombatFeelVfxController,
 } from './combatFeelVfx.ts';
+import {
+  createTacticalArenaProps,
+  type TacticalArenaController,
+} from './tacticalArenaProps.ts';
 import { createGenjiAudio, type GenjiAudioController } from './genjiAudio.ts';
 import { createGenjiWeapon } from './genjiWeapon.ts';
 import { createGunnerWeapon } from './gunnerWeapon.ts';
@@ -133,6 +141,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   let buildStats: GenjiBuildStats = createBaseGenjiStats();
   let gunnerStats: GunnerStats = createBaseGunnerStats();
   let hanzoStats: HanzoStats = createBaseHanzoStats();
+  let synergySummary: BuildSynergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
+  let mobilityEmpowerT = 0;
+  let precisionBurstCd = 0;
+  let gunnerSprintAmmoFrac = 0;
   let totalUpgradesPicked = 0;
 
   const catalogMap = new Map<string, GenjiUpgradeCard>();
@@ -333,9 +345,111 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     fovKick = Math.min(10.5, fovKick + 3.0);
   }
 
-  // --- Install GPU-Instanced Combat Feel VFX & Batching Telemetry Controller ---
+  // --- Install GPU-Instanced Combat Feel VFX & Hanamura Tactical Arena Props ---
   const combatVfx: CombatFeelVfxController =
     G.combatVfx ?? (G.combatVfx = createCombatFeelVfx(G));
+
+  const _synBurstCenter = new THREE.Vector3();
+  const _synBurstDir = new THREE.Vector3(0, 1, 0);
+  const _synEcsCands: any[] = [];
+
+  function triggerSynergyAreaBurst(
+    center: { x: number; y: number; z: number },
+    radius: number,
+    damage: number,
+    colorHex: number,
+    excludeEnemyId = -1
+  ) {
+    if (damage <= 0) return;
+    _synBurstCenter.set(center.x, center.y + 0.65, center.z);
+    combatVfx.triggerImpact({
+      point: _synBurstCenter,
+      dir: null,
+      weak: true,
+      killed: false,
+      heavy: true,
+      colorHex,
+    });
+    if (G.render && G.render.lightPool) {
+      G.render.lightPool.flash(_synBurstCenter, colorHex, 52, radius * 2.1, 0.18);
+    }
+    const liveEcs = G.ecsCombat as EcsCombatBridge | undefined;
+    let list: any[] = G.enemies && Array.isArray(G.enemies.list) ? G.enemies.list : [];
+    if (liveEcs && typeof liveEcs.queryEnemiesInSphere === 'function') {
+      liveEcs.queryEnemiesInSphere(center.x, center.y + 0.8, center.z, radius + 1.0, _synEcsCands);
+      list = _synEcsCands;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const en = list[i];
+      if (!en || !en.alive || en.id === excludeEnemyId || !en.pos) continue;
+      const dx = en.pos.x - center.x;
+      const dy = en.pos.y + 0.9 - (center.y + 0.65);
+      const dz = en.pos.z - center.z;
+      if (dx * dx + dy * dy + dz * dz <= radius * radius) {
+        _synBurstDir.set(dx || 0.1, 0.25, dz || 0.1).normalize();
+        en.__bypassShieldOnce = true;
+        en.damage(damage, en.pos, _synBurstDir, 'splash');
+      }
+    }
+    cleaveColossalBoss(_synBurstCenter, radius + 1.2, damage, _synBurstDir, 'synergy-burst');
+  }
+
+  const tacticalProps: TacticalArenaController = createTacticalArenaProps(G, {
+    onPlayerHeal: (amt) => {
+      if (G.player && G.player.alive) G.player.heal(amt);
+    },
+    onGrantUltCharge: (pct) => {
+      if (activeHero === 'gunner') {
+        gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + pct, 0, 100);
+      } else if (activeHero === 'hanzo') {
+        hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + pct, 0, 100);
+      } else {
+        cdState.ultCharge = clamp(cdState.ultCharge + pct, 0, 100);
+      }
+    },
+    onUpdraftLaunch: () => {
+      agilityState.airJumpsLeft = Math.max(1, buildStats.maxAirJumps);
+      hanzoLungeChargesLeft = Math.max(1, hanzoStats.maxAirJumps);
+      fovKick = Math.min(10.5, fovKick + 3.0);
+    },
+    onEnemyHit: (en, _dmg, killed) => {
+      if (G.combat && G.combat.stats) G.combat.stats.hits++;
+      G.events.emit('player:hitEnemy', { enemy: en, part: 'body', killed, weak: false });
+    },
+    cleaveColossalBoss: (center, radius, amount, dir, source) =>
+      cleaveColossalBoss(center, radius, amount, dir, source),
+    onHudNotice: (feedHtml) => {
+      if (G.hud && typeof G.hud.feed === 'function') G.hud.feed(feedHtml);
+    },
+    onAudioCue: (kind) => {
+      if (kind === 'cask_boom') audio.helixExplode();
+      else if (kind === 'updraft') audio.doubleJump();
+      else audio.orbShatter();
+    },
+  });
+  G.tacticalProps = tacticalProps;
+
+  G.getTacticalDamageMultiplier = () => {
+    let mult = tacticalProps.getDamageMultiplier();
+    if (mobilityEmpowerT > 0 && synergySummary.mobilityEmpowerRatio > 0) {
+      mult *= 1 + synergySummary.mobilityEmpowerRatio;
+    }
+    if (
+      G.player &&
+      (!G.player.onGround || agilityState.isWallClimbing) &&
+      synergySummary.aerialDamageBonus > 0
+    ) {
+      mult *= 1 + synergySummary.aerialDamageBonus;
+    }
+    if (
+      activeHero === 'gunner' &&
+      isPlayerInsideBioticField() &&
+      synergySummary.deflectOffenseBonus > 0
+    ) {
+      mult *= 1 + synergySummary.deflectOffenseBonus * 0.6;
+    }
+    return mult;
+  };
 
   function applyHeavyHitstop(sec: number, fovPunchDeg = 0) {
     const clamped = clamp(sec, 0, 0.065);
@@ -365,11 +479,15 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     onHeavyHit(sec: number, fovPunchDeg = 0) {
       applyHeavyHitstop(sec, fovPunchDeg);
     },
-    onDamageDealt(amount, _enemy, _killed, weak, source) {
+    onDamageDealt(amount, enemy, _killed, weak, source) {
       if (amount > 0) {
+        const thunderBonus =
+          weak && (upgradeStacks['shuriken_thunder'] || 0) > 0
+            ? 18 * (upgradeStacks['shuriken_thunder'] || 0)
+            : 0;
         cdState.ultCharge = addUltimateDamageCharge(
           cdState.ultCharge,
-          amount,
+          amount + thunderBonus,
           buildStats.ultChargeMultiplier,
           cdState.dragonActiveT > 0
         );
@@ -383,6 +501,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       }
       if (weak && source === 'shuriken' && (upgradeStacks['shuriken_cadence'] || 0) > 0) {
         genjiWeapon.addAmmo(2);
+      }
+      if (weak && synergySummary.precisionBurstDamage > 0 && precisionBurstCd <= 0 && enemy?.pos) {
+        precisionBurstCd = 0.75;
+        triggerSynergyAreaBurst(
+          enemy.pos,
+          3.6,
+          synergySummary.precisionBurstDamage,
+          0x45ff96,
+          enemy.id ?? -1
+        );
       }
     },
   });
@@ -419,6 +547,18 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       cleaveColossalBoss(center, radius, amount, dir, source),
     getColossalBossVisorCandidate: (): VisorCandidate | null => {
       if (!colossusState || colossusState.hp <= 0 || !colossusRoot.visible) return null;
+      if (colossusState.coreExposed && (colossusState.coreHp ?? 0) > 0) {
+        return {
+          id: 999104,
+          aimPoint: {
+            x: colossusPos.x + Math.sin(colossusYaw) * 1.35,
+            y: colossusPos.y + 4.55,
+            z: colossusPos.z + Math.cos(colossusYaw) * 1.35,
+          },
+          isBoss: true,
+          hpRatio: clamp01(colossusState.hp / Math.max(1, colossusState.maxHp)),
+        };
+      }
       for (let k = 0; k < 4; k++) {
         if (colossusState.orbsAlive[k]) {
           const wp = colossusOrbWorldPos[k];
@@ -440,13 +580,33 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     onHeavyHit(sec: number, fovPunchDeg = 0) {
       applyHeavyHitstop(sec, fovPunchDeg);
     },
-    onDamageDealt(amount) {
+    onDamageDealt(amount, enemy, _killed, weak) {
       if (amount > 0) {
+        const thunderBonus =
+          weak && (upgradeStacks['shuriken_thunder'] || 0) > 0
+            ? 16 * (upgradeStacks['shuriken_thunder'] || 0)
+            : 0;
         gunnerCd.ultCharge = addUltimateDamageCharge(
           gunnerCd.ultCharge,
-          amount * 0.78,
+          amount * 0.78 + thunderBonus,
           gunnerStats.ultChargeMultiplier,
           gunnerCd.visorActiveT > 0
+        );
+      }
+      if (weak && isPlayerInsideBioticField() && synergySummary.deflectOffenseBonus > 0) {
+        gunnerWeapon.ammo = Math.min(
+          gunnerStats.magSize,
+          gunnerWeapon.ammo + (synergySummary.tiers.mirror_barrage === 2 ? 2 : 1)
+        );
+      }
+      if (weak && synergySummary.precisionBurstDamage > 0 && precisionBurstCd <= 0 && enemy?.pos) {
+        precisionBurstCd = synergySummary.tiers.dragon_munitions === 2 ? 0.7 : 0.9;
+        triggerSynergyAreaBurst(
+          enemy.pos,
+          3.8,
+          synergySummary.precisionBurstDamage,
+          0xff9d38,
+          enemy.id ?? -1
         );
       }
     },
@@ -485,13 +645,40 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     onHeavyHit(sec: number, fovPunchDeg = 0) {
       applyHeavyHitstop(sec, fovPunchDeg);
     },
-    onDamageDealt(amount, _enemy, _killed, _weak, source) {
+    onDamageDealt(amount, enemy, _killed, weak, source) {
       if (amount > 0 && source !== 'dragonstrike') {
+        const airBonus =
+          !player.onGround && synergySummary.aerialDamageBonus > 0 ? 22 : 0;
         hanzoCd.ultCharge = addUltimateDamageCharge(
           hanzoCd.ultCharge,
-          amount * 0.86,
+          amount * 0.86 + airBonus,
           hanzoStats.ultChargeMultiplier,
           hanzoCd.dragonActiveT > 0
+        );
+      }
+      if (
+        source === 'storm_arrow' &&
+        synergySummary.deflectOffenseBonus > 0 &&
+        enemy?.pos &&
+        hanzoWeapon.isPointInSonicField(enemy.pos)
+      ) {
+        const sonicBurst = synergySummary.tiers.mirror_barrage === 2 ? 110 : 68;
+        triggerSynergyAreaBurst(enemy.pos, 4.0, sonicBurst, 0x38d8ff, enemy.id ?? -1);
+        if (synergySummary.tiers.mirror_barrage === 2 && hanzoCd.stormActiveT > 0) {
+          hanzoCd.stormArrowsLeft = Math.min(
+            hanzoStats.stormArrowCount,
+            hanzoCd.stormArrowsLeft + 1
+          );
+        }
+      }
+      if (weak && synergySummary.precisionBurstDamage > 0 && precisionBurstCd <= 0 && enemy?.pos) {
+        precisionBurstCd = 0.75;
+        triggerSynergyAreaBurst(
+          enemy.pos,
+          3.8,
+          synergySummary.precisionBurstDamage,
+          0x4ee8ff,
+          enemy.id ?? -1
         );
       }
     },
@@ -513,10 +700,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         enemy.__variant === 'mortar_crab' ||
         enemy.__variant === 'shield_guard')
     );
+    const airborneKill = !player.onGround || agilityState.isWallClimbing;
+    const skyDragonTier = synergySummary.tiers.sky_dragon;
+
     if (activeHero === 'gunner') {
+      const airHelixBonus = airborneKill && skyDragonTier === 2 ? 1.2 : 0;
       gunnerCd.helixCd = isBoss
         ? 0
-        : Math.max(0, gunnerCd.helixCd - (isEliteMech ? 2.6 : 1.8));
+        : Math.max(0, gunnerCd.helixCd - (isEliteMech ? 2.6 : 1.8) - airHelixBonus);
       if (gunnerCd.visorActiveT > 0) {
         if (gunnerCd.visorExtendsUsed < gunnerStats.maxVisorExtensions) {
           gunnerCd.visorExtendsUsed++;
@@ -541,7 +732,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       hanzoCd.lungeCd = updatedH.lungeCd;
       hanzoCd.sonicCd = updatedH.sonicCd;
       hanzoCd.stormCd = updatedH.stormCd;
-      hanzoCd.ultCharge = updatedH.ultCharge;
+      hanzoCd.ultCharge = clamp(
+        updatedH.ultCharge + (airborneKill && skyDragonTier > 0 ? (skyDragonTier === 2 ? 8 : 4) : 0),
+        0,
+        100
+      );
       if ((upgradeStacks['dragon_feast'] || 0) > 0) {
         const bonusCd = 1.8 * (upgradeStacks['dragon_feast'] || 1);
         hanzoCd.stormCd = Math.max(0, hanzoCd.stormCd - bonusCd);
@@ -554,7 +749,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     const wasOnCd = cdState.swiftCd > 0.05;
     const updated = applyGenjiEliminationReset(cdState, buildStats, isBoss);
     cdState.swiftCd = updated.swiftCd;
-    cdState.ultCharge = updated.ultCharge;
+    cdState.ultCharge = clamp(
+      updated.ultCharge +
+        (airborneKill && skyDragonTier > 0 && cdState.dragonActiveT <= 0
+          ? skyDragonTier === 2
+            ? 9
+            : 5
+          : 0),
+      0,
+      100
+    );
     cdState.dragonActiveT = updated.dragonActiveT;
     cdState.dragonExtendsUsed = updated.dragonExtendsUsed;
     swiftResetFlashT = 0.72;
@@ -739,6 +943,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
       _segA.copy(player.pos).setY(player.pos.y + 0.95);
       _aheadProbe.copy(_segA).addScaledVector(dragonLungeDir, Math.min(2.4, lungeSpeed * stepT + 1.0));
+      tacticalProps.damageSphere(_aheadProbe, 2.3, buildStats.dragonbladeSlashDamage);
       if (G.level && typeof G.level.damageInRadius === 'function') {
         const smashed = G.level.damageInRadius(_aheadProbe, 2.2, buildStats.dragonbladeSlashDamage, dragonLungeDir);
         if (smashed > 0) audio.structureBreak(true);
@@ -809,6 +1014,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
       _segA.copy(player.pos).setY(player.pos.y + 0.95);
       _aheadProbe.copy(_segA).addScaledVector(dashDir, Math.min(2.6, dashSpeed * stepT + 1.1));
+      tacticalProps.damageSphere(_aheadProbe, 2.4, buildStats.swiftStrikeDamage + 45);
       if (G.level && typeof G.level.damageInRadius === 'function') {
         const smashed = G.level.damageInRadius(_aheadProbe, 2.35, buildStats.swiftStrikeDamage + 45, dashDir);
         if (smashed > 0) {
@@ -1105,6 +1311,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         if (hanzoStats.lungeShieldHeal > 0) {
           player.heal(hanzoStats.lungeShieldHeal);
         }
+        if (synergySummary.mobilityEmpowerRatio > 0) {
+          mobilityEmpowerT = 3.0;
+        }
         audio.hanzoLunge();
         player.addShake(0.11);
         fovKick = Math.min(10.5, fovKick + 2.4);
@@ -1192,6 +1401,16 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       triggerDeflectIaidoFinisher();
     }
 
+    // Cross-Archetype Synergies: `gale_volley` (full reload + 3s Thunder-Edge amp) & `phantom_ward` (heal + Deflect CD refund)
+    if (synergySummary.mobilityEmpowerRatio > 0) {
+      genjiWeapon.ammo = buildStats.magSize;
+      mobilityEmpowerT = 3.0;
+    }
+    if (synergySummary.pairedWardHeal > 0) {
+      player.heal(synergySummary.pairedWardHeal);
+      cdState.deflectCd = Math.max(0, cdState.deflectCd - synergySummary.pairedCdRefundSec);
+    }
+
     dashDir.copy(player.forward).normalize();
     if (player.onGround && dashDir.y < -0.15) {
       dashDir.y = -0.04;
@@ -1227,6 +1446,11 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     cdState.deflectActiveT = buildStats.deflectDuration;
     cdState.deflectCd = buildStats.deflectCooldown + buildStats.deflectDuration;
 
+    if (synergySummary.pairedWardHeal > 0) {
+      player.heal(synergySummary.pairedWardHeal);
+      cdState.swiftCd = Math.max(0, cdState.swiftCd - synergySummary.pairedCdRefundSec);
+    }
+
     // Immediate Single-Katana Iaijutsu Draw-Slash (`拔刀斩击`) across screen + frontal cleave!
     genjiWeapon.triggerDeflectDrawSlash();
     audio.deflectStart();
@@ -1236,6 +1460,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     const drawCleaveDmg = Math.round(78 * Math.max(1, buildStats.deflectMultiplier * 0.5));
     _aheadProbe.copy(player.eye).addScaledVector(player.forward, 2.0);
+    tacticalProps.damageSphere(_aheadProbe, 2.4, drawCleaveDmg);
     if (G.level && typeof G.level.damageInRadius === 'function') {
       G.level.damageInRadius(_aheadProbe, 2.3, drawCleaveDmg, player.forward);
     }
@@ -1289,9 +1514,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     hitstopT = Math.max(hitstopT, 0.045);
     genjiWeapon.onCastDragonblade();
     audio.dragonbladeCast();
+    if (synergySummary.ultCastPulseDamage > 0) {
+      triggerSynergyAreaBurst(player.pos, 7.5, synergySummary.ultCastPulseDamage, 0x45ff90);
+    }
     if (G.render && G.render.lightPool) {
       G.render.lightPool.flash(player.eye, 0x45ff90, 95, 16, 0.38);
     }
+    tacticalProps.damageSphere(player.pos, 4.4, 70);
     if (G.level && typeof G.level.damageInRadius === 'function') {
       G.level.damageInRadius(player.pos, 4.2, 55, player.forward);
     }
@@ -1303,6 +1532,49 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     gunnerCd.sprintActive = !gunnerCd.sprintActive;
     if (gunnerCd.sprintActive) {
       fovKick = Math.min(10.5, fovKick + 2.2);
+      if (synergySummary.mobilityEmpowerRatio > 0) {
+        mobilityEmpowerT = 3.0;
+      }
+    }
+  }
+
+  function deployGunnerBioticAtPlayer(bonusPulseDmg = 0) {
+    gunnerCd.bioticActiveT = gunnerStats.bioticDuration;
+    const gY = G.physics.groundHeight(player.pos.x, player.pos.z, player.pos.y + 0.6);
+    bioticCenter.set(player.pos.x, Number.isFinite(gY) ? gY : player.pos.y, player.pos.z);
+    bioticHealFrac = 0;
+    gunnerWeapon.deployBioticField(bioticCenter, gunnerStats.bioticDuration, gunnerStats.bioticRadius);
+    audio.bioticDeploy();
+    player.heal(18 + synergySummary.pairedWardHeal);
+    if (synergySummary.pairedCdRefundSec > 0) {
+      gunnerCd.helixCd = Math.max(0, gunnerCd.helixCd - synergySummary.pairedCdRefundSec);
+    }
+    const shockDmg = gunnerStats.bioticPulseShockwave + bonusPulseDmg;
+    if (shockDmg > 0) {
+      const shockR = gunnerStats.bioticRadius + 2.4;
+      const list: any[] = G.enemies.list || [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const e = list[i];
+        if (!e || !e.alive) continue;
+        const dx = e.pos.x - bioticCenter.x;
+        const dz = e.pos.z - bioticCenter.z;
+        const d = Math.hypot(dx, dz);
+        if (d <= shockR && Math.abs(e.pos.y - bioticCenter.y) <= 3.6) {
+          _bioticHitDir.set(dx || 1, 0.2, dz || 0).normalize();
+          e.__bypassShieldOnce = true;
+          e.__guardBrokenT = Math.max(e.__guardBrokenT || 0, 1.8);
+          e.damage(shockDmg, e.pos, _bioticHitDir, 'body');
+        }
+      }
+      cleaveColossalBoss(bioticCenter, shockR + 1.5, shockDmg, player.forward, 'biotic-shock');
+      tacticalProps.damageSphere(bioticCenter, shockR, shockDmg);
+      if (G.level && typeof G.level.damageDestructiblesInSphere === 'function') {
+        G.level.damageDestructiblesInSphere(bioticCenter, shockR, shockDmg);
+      }
+      fovKick = Math.min(10.5, fovKick + 2.2);
+    }
+    if (G.render && G.render.lightPool) {
+      G.render.lightPool.flash(bioticCenter, 0xffe066, 52, gunnerStats.bioticRadius * 2.2, 0.22);
     }
   }
 
@@ -1315,39 +1587,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     ) {
       return;
     }
-    gunnerCd.bioticActiveT = gunnerStats.bioticDuration;
     gunnerCd.bioticCd = gunnerStats.bioticCooldown;
-    const gY = G.physics.groundHeight(player.pos.x, player.pos.z, player.pos.y + 0.6);
-    bioticCenter.set(player.pos.x, Number.isFinite(gY) ? gY : player.pos.y, player.pos.z);
-    bioticHealFrac = 0;
-    gunnerWeapon.deployBioticField(bioticCenter, gunnerStats.bioticDuration, gunnerStats.bioticRadius);
-    audio.bioticDeploy();
-    player.heal(18);
-    if (gunnerStats.bioticPulseShockwave > 0) {
-      const shockR = gunnerStats.bioticRadius + 2.4;
-      const shockDmg = gunnerStats.bioticPulseShockwave;
-      const list: any[] = G.enemies.list || [];
-      for (let i = list.length - 1; i >= 0; i--) {
-        const e = list[i];
-        if (!e || !e.alive) continue;
-        const dx = e.pos.x - bioticCenter.x;
-        const dz = e.pos.z - bioticCenter.z;
-        const d = Math.hypot(dx, dz);
-        if (d <= shockR && Math.abs(e.pos.y - bioticCenter.y) <= 3.6) {
-          _bioticHitDir.set(dx || 1, 0.2, dz || 0).normalize();
-          e.__bypassShieldOnce = true;
-          e.damage(shockDmg, e.pos, _bioticHitDir, 'body');
-        }
-      }
-      cleaveColossalBoss(bioticCenter, shockR + 1.5, shockDmg, player.forward, 'biotic-shock');
-      if (G.level && typeof G.level.damageDestructiblesInSphere === 'function') {
-        G.level.damageDestructiblesInSphere(bioticCenter, shockR, shockDmg);
-      }
-      fovKick = Math.min(10.5, fovKick + 2.2);
-    }
-    if (G.render && G.render.lightPool) {
-      G.render.lightPool.flash(bioticCenter, 0xffe066, 52, gunnerStats.bioticRadius * 2.2, 0.22);
-    }
+    deployGunnerBioticAtPlayer(0);
   }
 
   function tryCastTacticalVisor() {
@@ -1370,6 +1611,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     fovKick = Math.min(10.5, fovKick + 3.8);
     gunnerWeapon.onCastVisor();
     audio.visorCast();
+    // `zenith_resonance` (`目镜力场共振`): auto-deploy Biotic Field & EMP pulse on Visor activation!
+    if (synergySummary.ultCastPulseDamage > 0) {
+      deployGunnerBioticAtPlayer(synergySummary.ultCastPulseDamage);
+    }
     if (G.render && G.render.lightPool) {
       G.render.lightPool.flash(player.eye, 0xff5a40, 68, 12, 0.26);
     }
@@ -1385,6 +1630,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
     if (hanzoCd.sonicCd > 0.05) return;
     hanzoCd.sonicArmed = true;
+    if (synergySummary.pairedWardHeal > 0) {
+      player.heal(synergySummary.pairedWardHeal);
+      hanzoCd.lungeCd =
+        synergySummary.tiers.phantom_ward === 2
+          ? 0
+          : Math.max(0, hanzoCd.lungeCd - synergySummary.pairedCdRefundSec);
+      hanzoLungeChargesLeft = Math.max(1, hanzoLungeChargesLeft);
+    }
     audio.bowDrawStart();
   }
 
@@ -1401,6 +1654,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     hanzoCd.stormArrowsLeft = hanzoStats.stormArrowCount;
     hanzoCd.stormActiveT = hanzoStats.stormArrowDuration;
     hanzoCd.stormCd = hanzoStats.stormArrowCooldown;
+    if (synergySummary.pairedWardHeal > 0) {
+      player.heal(synergySummary.pairedWardHeal);
+      hanzoCd.lungeCd =
+        synergySummary.tiers.phantom_ward === 2
+          ? 0
+          : Math.max(0, hanzoCd.lungeCd - synergySummary.pairedCdRefundSec);
+      hanzoLungeChargesLeft = Math.max(1, hanzoLungeChargesLeft);
+    }
     audio.stormArrowsCast();
     fovKick = Math.min(10.5, fovKick + 2.0);
     if (G.render && G.render.lightPool) {
@@ -1422,6 +1683,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     hanzoCd.dragonActiveT = hanzoStats.dragonstrikeDuration;
     hanzoCd.lungeCd = 0;
     hanzoLungeChargesLeft = hanzoStats.maxAirJumps;
+    if (synergySummary.ultCastPulseDamage > 0) {
+      hanzoCd.stormCd = 0;
+      if (synergySummary.tiers.zenith_resonance === 2) {
+        hanzoCd.sonicCd = 0;
+      }
+      triggerSynergyAreaBurst(player.pos, 8.2, synergySummary.ultCastPulseDamage, 0x38d8ff);
+    }
     player.heal(55);
     player.addShake(0.36);
     fovKick = Math.min(10.5, fovKick + 4.4);
@@ -1696,6 +1964,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
           spawnDeflectedSpear(_parryPt, _deflectDir, dmg, buildStats.deflectHomingWeakspot || wasColossus);
           genjiWeapon.addAmmo(3);
+          if (synergySummary.parryBonusKunai > 0) {
+            genjiWeapon.spawnHomingKunai(_parryPt, synergySummary.parryBonusKunai, 46);
+          }
 
           // Unmistakable Parry Clang + 3D Shockwave Ring & Radial Steel Sparks + Hitstop + FOV Punch!
           audio.deflectParry();
@@ -1707,7 +1978,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           if (buildStats.deflectHealPerBolt > 0) {
             player.heal(buildStats.deflectHealPerBolt);
           }
-          const extraUlt = buildStats.deflectHealPerBolt > 0 ? 55 : 32;
+          const extraUlt =
+            (buildStats.deflectHealPerBolt > 0 ? 55 : 32) + synergySummary.extraParryUltGain * 10;
           cdState.ultCharge = addUltimateDamageCharge(
             cdState.ultCharge,
             extraUlt,
@@ -1755,7 +2027,12 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         G.level && typeof G.level.raycastDestructible === 'function'
           ? G.level.raycastDestructible(sp.pos, sp.dir, wHit ? wHit.dist + 0.2 : step)
           : null;
-      const maxEnemyDist = Math.min(wHit ? wHit.dist : step, dHit ? dHit.dist : step);
+      const pHit = tacticalProps.raycast(sp.pos, sp.dir, wHit ? wHit.dist + 0.2 : step);
+      const maxEnemyDist = Math.min(
+        wHit ? wHit.dist : step,
+        dHit ? dHit.dist : step,
+        pHit ? pHit.dist : step
+      );
       const cHit = raycastColossalBoss(sp.pos, sp.dir, maxEnemyDist);
       const eHit = G.enemies.raycast(sp.pos, sp.dir, cHit ? cHit.dist : maxEnemyDist);
 
@@ -1785,6 +2062,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         const res = damageColossalBoss(sp.damage * 1.15, cHit.point, sp.dir, cHit.orbIndex, 'deflect');
         genjiWeapon.spawnParryBurst(cHit.point, true);
         audio.bladeCleaveImpact(res.killed || res.orbShattered);
+        sp.active = false;
+        continue;
+      }
+
+      if (pHit && (!dHit || pHit.dist <= dHit.dist)) {
+        tacticalProps.triggerHit(pHit.propIndex, sp.damage, pHit.point, sp.dir);
+        genjiWeapon.spawnParryBurst(pHit.point, true);
         sp.active = false;
         continue;
       }
@@ -2052,13 +2336,34 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       en.__maxHp = en.hp;
       en.__mortarFireT = 1.6 + rng() * 0.9;
       en.__crabGaitT = rng() * 6.28;
+      en.__ventExposedT = 0;
       buildMasterworkMortarCrabRig(G, en).visible = true;
+      if (!en.__origDamage) {
+        en.__origDamage = en.damage.bind(en);
+      }
+      en.damage = (rawAmt: number, hitPt: any, hitDir: any, part: string) => {
+        const ventExposed = (en.__ventExposedT || 0) > 0;
+        const mult = ventExposed ? 1.4 : 1.0;
+        if (ventExposed && hitPt) {
+          combatVfx.triggerImpact({
+            point: hitPt,
+            dir: hitDir,
+            enemy: en,
+            weak: true,
+            killed: false,
+            colorHex: 0xffa838,
+          });
+        }
+        return en.__origDamage(Math.round(rawAmt * mult), hitPt, hitDir, part);
+      };
     } else if (variant === 'shield_guard') {
       en.rig.group.scale.setScalar(1.14);
       en.__hitR2 = 3.6;
       en.hp = Math.round(156 * hpScale);
       en.__maxHp = en.hp;
       en.__shieldFlashT = 0;
+      en.__guardBrokenT = 0;
+      en.__shieldLungeCd = 4.5 + rng() * 1.2;
       applyKarakuriSamuraiRig(G, en, 'shield_guard');
       buildMasterworkShieldGuardAttachment(G, en).visible = true;
       if (!en.__origDamage) {
@@ -2069,10 +2374,15 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           hitDir && (hitDir.x || hitDir.z)
             ? { x: -hitDir.x, y: -(hitDir.y || 0), z: -hitDir.z }
             : { x: player.pos.x - en.pos.x, y: 0, z: player.pos.z - en.pos.z };
-        const bypassOnce = !!en.__bypassShieldOnce;
+        const guardBroken = (en.__guardBrokenT || 0) > 0;
+        const bypassOnce = !!en.__bypassShieldOnce || guardBroken;
         en.__bypassShieldOnce = false;
+        if (part === 'dragonblade') {
+          en.__guardBrokenT = Math.max(en.__guardBrokenT || 0, 1.5);
+        }
+        const scaledAmt = guardBroken ? Math.round(rawAmt * 1.45) : rawAmt;
         const res = computeShieldedEnemyDamage({
-          rawDamage: rawAmt,
+          rawDamage: scaledAmt,
           toSourceDir: toSrc,
           enemyForward: en.fwd || { x: Math.sin(en.yaw || 0), y: 0, z: Math.cos(en.yaw || 0) },
           isWeakspot: part === 'weak' || part === 'head',
@@ -2300,6 +2610,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
             brl.position.y = -en.__crabRecoil * 0.14;
           }
         }
+        en.__ventExposedT = Math.max(0, (en.__ventExposedT || 0) - dt);
         en.__mortarFireT = (en.__mortarFireT ?? 2.4) - dt;
         if (en.__mortarFireT <= 0 && player.alive && fireCtx && fireCtx.fireBolt) {
           en.__mortarFireT = 2.55 + rng() * 0.65;
@@ -2308,6 +2619,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           const horiz = Math.hypot(_aiDir.x, _aiDir.z);
           if (horiz > 5 && horiz < 68) {
             en.__crabRecoil = 1.0;
+            en.__ventExposedT = 1.35; // Exposes glowing dorsal heat-vent core for 1.35s (`1.4x` crit damage!)
             _aiDir.y += Math.min(12.0, horiz * 0.24 + 2.2);
             _aiDir.normalize();
             fireCtx.fireBolt(_aiOrigin, _aiDir, en);
@@ -2325,15 +2637,51 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         }
       }
 
-      // 3. Shield Guard (`玄甲盾卫机关兵`): pulse octagonal hex-field ShaderMaterial when blocking frontal fire!
-      if (en.__variant === 'shield_guard' && en.__shieldEnergyRim) {
+      // 3. Shield Guard (`玄甲盾卫机关兵`): pulse octagonal hex-field ShaderMaterial + Breach Lunge -> 1.45s Guard-Break window!
+      if (en.__variant === 'shield_guard') {
         en.__shieldFlashT = Math.max(0, (en.__shieldFlashT || 0) - dt);
-        const rimMat = en.__shieldEnergyRim.material;
-        if (rimMat && rimMat.uniforms && en.__shieldFlashT > 0) {
-          rimMat.uniforms.uFlash.value = Math.max(
-            rimMat.uniforms.uFlash.value,
-            clamp01(en.__shieldFlashT / 0.16)
-          );
+        en.__guardBrokenT = Math.max(0, (en.__guardBrokenT || 0) - dt);
+        en.__gongStaggerT = Math.max(0, (en.__gongStaggerT || 0) - dt);
+        en.__shieldLungeCd = (en.__shieldLungeCd ?? 4.8) - dt;
+
+        if (en.__shieldDecor) {
+          // Visibly tilt shield aside while guard-broken so player has clear counterplay cue!
+          en.__shieldDecor.rotation.x = en.__guardBrokenT > 0 ? 0.52 : 0;
+        }
+        if (en.__shieldEnergyRim) {
+          const rimMat = en.__shieldEnergyRim.material;
+          if (rimMat && rimMat.uniforms) {
+            if (en.__guardBrokenT > 0) {
+              rimMat.uniforms.uFlash.value = 0;
+            } else if (en.__shieldFlashT > 0) {
+              rimMat.uniforms.uFlash.value = Math.max(
+                rimMat.uniforms.uFlash.value,
+                clamp01(en.__shieldFlashT / 0.16)
+              );
+            }
+          }
+        }
+
+        if (
+          en.__shieldLungeCd <= 0 &&
+          en.__guardBrokenT <= 0 &&
+          en.__gongStaggerT <= 0 &&
+          player.alive
+        ) {
+          const dxP = player.pos.x - en.pos.x;
+          const dzP = player.pos.z - en.pos.z;
+          const distP = Math.hypot(dxP, dzP);
+          if (distP > 3.2 && distP < 15.5) {
+            en.__shieldLungeCd = 5.4 + rng() * 1.2;
+            const stepM = Math.min(3.4, distP - 1.6);
+            const nx = en.pos.x + (dxP / distP) * stepM;
+            const nz = en.pos.z + (dzP / distP) * stepM;
+            const gy = G.physics.groundHeight(nx, nz, en.pos.y + 1.2);
+            if (Number.isFinite(gy) && Math.abs(gy - en.pos.y) <= 1.1) {
+              en.pos.set(nx, gy, nz);
+            }
+            en.__guardBrokenT = 1.45; // Post-lunge recovery exposes unshielded weakpoint!
+          }
         }
       }
 
@@ -2842,6 +3190,64 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   colShockwaveMesh.frustumCulled = false;
   G.scene.add(colShockwaveMesh);
 
+  // GPU-Instanced 3-Circle Thunder Judgment Telegraph (`雷神天罚 · 落雷预警阵`, 1 Draw Call when active!)
+  const colThunderPlaneGeo = new THREE.PlaneGeometry(1, 1);
+  colThunderPlaneGeo.rotateX(-Math.PI / 2);
+  const colThunderMat = new THREE.ShaderMaterial({
+    uniforms: { uProgress: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        #ifdef USE_INSTANCING
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        #else
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        #endif
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform float uProgress;
+      varying vec2 vUv;
+      void main() {
+        vec2 p = (vUv - 0.5) * 2.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+        float ang = atan(p.y, p.x);
+        float rim = smoothstep(0.86, 0.96, r) * (1.0 - smoothstep(0.96, 1.0, r));
+        float fill = smoothstep(uProgress - 0.12, uProgress, r) * (1.0 - smoothstep(uProgress, uProgress + 0.04, r));
+        float spokes = 0.5 + 0.5 * cos(ang * 6.0 - uProgress * 12.0);
+        float alpha = rim * (0.62 + 0.35 * spokes) + fill * 0.72 + (1.0 - r) * 0.16 * uProgress;
+        vec3 col = mix(vec3(0.24, 0.78, 1.0), vec3(1.0, 0.92, 0.55), rim + fill * 0.65);
+        gl_FragColor = vec4(col * 2.3, clamp(alpha, 0.0, 0.94));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+  const colThunderRingsInst = new THREE.InstancedMesh(colThunderPlaneGeo, colThunderMat, 3);
+  colThunderRingsInst.frustumCulled = false;
+  colThunderRingsInst.visible = false;
+  colThunderRingsInst.count = 0;
+  colThunderRingsInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  G.scene.add(colThunderRingsInst);
+  combatVfx.registerBatch({
+    name: 'colossus_thunder_rings',
+    meshes: [colThunderRingsInst],
+    getActiveCount: () => (colThunderRingsInst.visible ? colThunderRingsInst.count : 0),
+    legacyMeshesPerItem: 1,
+    eliminatedSceneMeshes: 2,
+  });
+  const colThunderTargets = [
+    new THREE.Vector3(),
+    new THREE.Vector3(),
+    new THREE.Vector3(),
+  ];
+
   // Boss Flame Crescent Projectile Pool (2 sweeping crimson-gold polar arcs!)
   interface BossFlameArc {
     active: boolean;
@@ -2880,6 +3286,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     colossusHitFlashT = 0;
     colossusSlamFired = false;
     colossusShockwaveT = 0;
+    colThunderRingsInst.visible = false;
 
     // Pick a dramatic clear street/courtyard arena spot (avoiding narrow sky-bridge roofs at x = -47 and x = -21!)
     let targetX = player.pos.x + player.forward.x * 19;
@@ -2941,6 +3348,28 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     let bestDist = maxDist;
     let bestOrb = -2;
     let hasCenter = false;
+
+    // 0. If Phase 2/3 `thunder_judgment` is channeling, test the exposed Central Raijin Heart Core (`orbIndex = 4`)!
+    if (colossusState.coreExposed && (colossusState.coreHp ?? 0) > 0) {
+      const coreX = colossusPos.x + Math.sin(colossusYaw) * 1.35;
+      const coreY = colossusPos.y + 4.55;
+      const coreZ = colossusPos.z + Math.cos(colossusYaw) * 1.35;
+      const ocx = origin.x - coreX;
+      const ocy = origin.y - coreY;
+      const ocz = origin.z - coreZ;
+      const b = ocx * dir.x + ocy * dir.y + ocz * dir.z;
+      const cVal = ocx * ocx + ocy * ocy + ocz * ocz - 0.98 * 0.98;
+      const disc = b * b - cVal;
+      if (disc >= 0) {
+        const t = -b - Math.sqrt(disc);
+        if (t >= 0 && t < bestDist) {
+          bestDist = t;
+          bestOrb = 4;
+          _colBestCenter.set(coreX, coreY, coreZ);
+          hasCenter = true;
+        }
+      }
+    }
 
     // 1. Test the 4 glowing Raijin Taiko weakspot orbs first (generous 0.78m hit radius!)
     for (let i = 0; i < 4; i++) {
@@ -3021,10 +3450,36 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       }
     }
     if (G.hud && G.hud.hitmarker) {
-      G.hud.hitmarker(outcome.killed, outcome.orbShattered);
+      G.hud.hitmarker(outcome.killed, outcome.orbShattered || !!outcome.coreInterrupted);
     }
 
-    if (outcome.orbShattered && outcome.shatteredOrbIndex >= 0) {
+    if (outcome.coreInterrupted) {
+      colTelegraphMesh.visible = false;
+      colThunderRingsInst.visible = false;
+      colChestCrest.scale.set(1.1, 1.35, 0.45);
+      audio.orbShatter();
+      genjiWeapon.spawnParryBurst(hitPoint, true);
+      combatVfx.triggerImpact({
+        point: hitPoint,
+        dir: player.forward,
+        weak: true,
+        killed: false,
+        heavy: true,
+        colorHex: 0x58e8ff,
+      });
+      cdState.swiftCd = 0;
+      hanzoCd.lungeCd = 0;
+      gunnerCd.helixCd = 0;
+      swiftResetFlashT = 0.85;
+      audio.swiftReset();
+      cdState.ultCharge = clamp(cdState.ultCharge + 15, 0, 100);
+      gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + 15, 0, 100);
+      hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + 15, 0, 100);
+      applyHeavyHitstop(0.056, 3.9);
+      player.addShake(0.30);
+      G.hud.warn('破招成功 · 击碎荒神雷核中断【雷神天罚】！', 2.4);
+      G.hud.feed('<b>破招反噬 · 荒神雷核崩解</b><em>造成 8% 生命反噬 · 破势眩晕</em>');
+    } else if (outcome.orbShattered && outcome.shatteredOrbIndex >= 0) {
       const idx = outcome.shatteredOrbIndex;
       if (colOrbMeshes[idx]) colOrbMeshes[idx].visible = false;
       audio.orbShatter();
@@ -3038,6 +3493,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         colorHex: 0xffe066,
       });
       colTelegraphMesh.visible = false;
+      colThunderRingsInst.visible = false;
       // Shattering a Raijin orb resets mobility & grants +18% ultimate charge!
       cdState.swiftCd = 0;
       hanzoCd.lungeCd = 0;
@@ -3058,7 +3514,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       G.hud.warn(
         outcome.newPhase === 3
           ? '荒神狂暴 · 叁之狂【业火大太刀】！'
-          : '荒神怒吼 · 贰之怒【雷神连弹】！',
+          : '荒神怒吼 · 贰之怒【雷神天罚】已解锁！',
         2.5
       );
     }
@@ -3066,6 +3522,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (outcome.killed) {
       colossusDeathT = 1.35;
       colTelegraphMesh.visible = false;
+      colThunderRingsInst.visible = false;
       audio.colossusRoar();
       audio.orbShatter();
       player.heal(80);
@@ -3108,7 +3565,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (!colossusState || colossusState.hp <= 0) return { killed: false, orbShattered: false };
     const outcome = stepColossalBossDamage(colossusState, amount, orbIndex);
     applyColossusOutcome(outcome, point, source);
-    return { killed: outcome.killed, orbShattered: outcome.orbShattered };
+    return {
+      killed: outcome.killed,
+      orbShattered: outcome.orbShattered || !!outcome.coreInterrupted,
+    };
   }
 
   function cleaveColossalBoss(
@@ -3121,7 +3581,24 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     if (!colossusState || colossusState.hp <= 0 || !colossusRoot.visible) {
       return { hit: false, killed: false, orbShattered: false };
     }
-    // Check if cleave sphere reaches any alive Raijin weakspot orb first!
+    // Check exposed Phase 2/3 Raijin Heart Core (`orbIndex = 4`) first!
+    if (colossusState.coreExposed && (colossusState.coreHp ?? 0) > 0) {
+      _colTmpA.set(
+        colossusPos.x + Math.sin(colossusYaw) * 1.35,
+        colossusPos.y + 4.55,
+        colossusPos.z + Math.cos(colossusYaw) * 1.35
+      );
+      if (_colTmpA.distanceTo(center) <= radius + 1.25) {
+        const outcome = stepColossalBossDamage(colossusState, amount, 4);
+        applyColossusOutcome(outcome, _colTmpA, source);
+        return {
+          hit: true,
+          killed: outcome.killed,
+          orbShattered: !!outcome.coreInterrupted,
+        };
+      }
+    }
+    // Check if cleave sphere reaches any alive Raijin weakspot orb!
     for (let i = 0; i < 4; i++) {
       if (!colossusState.orbsAlive[i]) continue;
       if (colossusOrbWorldPos[i].distanceTo(center) <= radius + 0.95) {
@@ -3354,17 +3831,90 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           audio.colossusSlam();
           player.addShake(0.42);
         }
+      } else if (atk === 'thunder_judgment') {
+        // Phase 2/3 Signature: 1.18s windup exposing chest heart-core (`orbIndex = 4`) + 3 GPU-instanced lightning rings!
+        const totalDur = 1.18;
+        const wProg = clamp01(1 - colossusState.attackTimer / totalDur);
+        colSwordArm.rotation.x = damp(colSwordArm.rotation.x, -2.05, 10, dt);
+        colChestCrest.scale.set(
+          1.65 + Math.sin(colossusAnimTime * 28) * 0.25,
+          2.05 + Math.sin(colossusAnimTime * 28) * 0.25,
+          0.85
+        );
+        colThunderMat.uniforms.uProgress.value = wProg;
+        colThunderRingsInst.visible = true;
+        for (let r = 0; r < 3; r++) {
+          _colTmpA.copy(colThunderTargets[r]);
+          _colTmpA.y += 0.08;
+          _dbQ.identity();
+          _dbS.set(6.2, 6.2, 1);
+          _dbM.compose(_colTmpA, _dbQ, _dbS);
+          colThunderRingsInst.setMatrixAt(r, _dbM);
+        }
+        colThunderRingsInst.count = 3;
+        colThunderRingsInst.instanceMatrix.needsUpdate = true;
+
+        if (!colossusSlamFired && colossusState.attackTimer <= 0.12) {
+          colossusSlamFired = true;
+          colossusState.coreExposed = false;
+          colThunderRingsInst.visible = false;
+          audio.colossusSlam();
+          player.addShake(0.38);
+
+          for (let r = 0; r < 3; r++) {
+            const tp = colThunderTargets[r];
+            combatVfx.triggerImpact({
+              point: { x: tp.x, y: tp.y + 0.8, z: tp.z },
+              dir: _yAxis,
+              weak: true,
+              killed: false,
+              heavy: true,
+              colorHex: 0x58e4ff,
+            });
+            if (G.render && G.render.lightPool) {
+              G.render.lightPool.flash(tp, 0x58e4ff, 88, 12, 0.26);
+            }
+            if (player.alive) {
+              const pHoriz = Math.hypot(player.pos.x - tp.x, player.pos.z - tp.z);
+              if (pHoriz <= 2.95 && Math.abs(player.pos.y - tp.y) <= 2.6) {
+                player.damage(28, tp);
+              }
+            }
+          }
+
+          // Also emit 8 radial Raijin bolts from chest (deflectable with Genji `E`!)
+          const fireCtx = G.enemies && G.enemies.debug ? G.enemies.debug.ctx : null;
+          if (fireCtx && fireCtx.fireBolt && player.alive) {
+            _colTmpA.set(colossusPos.x, colossusPos.y + 4.4, colossusPos.z);
+            for (let bIdx = 0; bIdx < 8; bIdx++) {
+              const spreadYaw = (bIdx - 3.5) * 0.065;
+              _colTmpB.copy(player.eye).sub(_colTmpA).normalize().applyAxisAngle(_yAxis, spreadYaw);
+              fireCtx.fireBolt(_colTmpA, _colTmpB, activeBoss || { pos: colossusPos, alive: true });
+              const bolts = G.enemies.debug.bolts;
+              for (let k = bolts.length - 1; k >= 0; k--) {
+                if (bolts[k].on && bolts[k].pos.distanceToSquared(_colTmpA) < 0.14) {
+                  bolts[k].__colossus = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
       }
 
       if (colossusState.attackTimer <= 0) {
         colossusState.activeAttack = null;
+        colossusState.coreExposed = false;
         colossusSlamFired = false;
         colTelegraphMesh.visible = false;
+        colThunderRingsInst.visible = false;
+        colChestCrest.scale.set(1.1, 1.35, 0.45);
         colossusState.attackCooldown = Math.max(0.85, 2.05 - colossusState.phase * 0.32);
       }
     } else {
       // Heavy colossal bipedal stride with physiological knee flexion & weight-shift pelvic bob!
       matColossusFlame.uniforms.uTime.value = colossusAnimTime;
+      colChestCrest.scale.set(1.1, 1.35, 0.45);
       colSwordArm.rotation.x = damp(colSwordArm.rotation.x, -0.25 + Math.sin(colossusAnimTime * 2.4) * 0.12, 6, dt);
       colSwordArm.rotation.z = damp(colSwordArm.rotation.z, 0, 6, dt);
 
@@ -3408,8 +3958,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
           colossusLeapEnd.set(landX, Number.isFinite(landY) ? Math.max(0, landY) : player.pos.y, landZ);
           audio.colossusRoar();
         } else {
-          const cycle = colossusState.attackIndex % 3;
-          if (cycle === 0) {
+          const modCount = colossusState.phase >= 2 ? 4 : 3;
+          const cycle = colossusState.attackIndex % modCount;
+          if (cycle === 3 && colossusState.phase >= 2) {
+            beginColossalThunderJudgment(colossusState);
+            for (let r = 0; r < 3; r++) {
+              const ang = r * 2.0944 + colossusAnimTime;
+              const distR = r === 0 ? 0 : 4.6;
+              const tx = clamp(player.pos.x + Math.cos(ang) * distR, -68, 72);
+              const tz = clamp(player.pos.z + Math.sin(ang) * distR, -44, 44);
+              const ty = G.physics.groundHeight(tx, tz, player.pos.y + 2.5);
+              colThunderTargets[r].set(tx, Number.isFinite(ty) ? Math.max(0, ty) : player.pos.y, tz);
+            }
+            audio.colossusRoar();
+            G.hud.warn('荒神咏唱【雷神天罚】· 速击胸口雷核破招！', 1.8);
+          } else if (cycle === 0) {
             colossusState.activeAttack = 'odachi_slam';
             colossusState.attackTimer = 1.35;
           } else if (cycle === 1) {
@@ -3690,7 +4253,13 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       buildStripEl.innerHTML = '';
       return;
     }
-    buildStripEl.innerHTML = entries
+    const synHtml = synergySummary.active
+      .map(
+        (syn) =>
+          `<span class="g-chip g-chip-syn" data-syn="${syn.id}" title="${syn.description}">✦ ${syn.badgeText}</span>`
+      )
+      .join('');
+    const chipsHtml = entries
       .map(([id, count]) => {
         const rawMeta = catalogMap.get(id);
         const meta = rawMeta ? resolveUpgradeCardForHero(rawMeta, activeHero) : undefined;
@@ -3699,6 +4268,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         return `<span class="g-chip" data-arch="${arch}">${title}${count > 1 ? ` ×${count}` : ''}</span>`;
       })
       .join('');
+    buildStripEl.innerHTML = synHtml + chipsHtml;
   }
 
   function openUpgradeDraft(subtitle: string, guaranteedRare = false) {
@@ -3740,6 +4310,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         const curLv = upgradeStacks[card.id] || 0;
         const archLabel = archLabels[card.archetype] || card.subtitle;
         const rarLabel = RARITY_LABELS[card.rarity] || '秘传';
+        const synPrev = computeDraftCardSynergyPreview(upgradeStacks, card.id, activeHero);
+        const synBadge = synPrev
+          ? `<div class="g-card-syn" data-syn-kind="${synPrev.kind}">✦ ${synPrev.badgeLabel}</div>`
+          : '';
         return `
           <button type="button" class="g-card" data-upgrade-idx="${idx}" data-arch="${card.archetype}" data-rarity="${card.rarity}">
             <div class="g-card-top">
@@ -3748,6 +4322,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
             </div>
             <h3 class="g-card-name">${card.title}</h3>
             <p class="g-card-desc">${card.description}</p>
+            ${synBadge}
             <div class="g-card-foot"><kbd>${idx + 1}</kbd><span>${actionLabel}</span></div>
           </button>
         `;
@@ -3765,6 +4340,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
   function chooseUpgrade(idx: number) {
     if (!upgradeOpen || idx < 0 || idx >= currentChoices.length) return;
     const picked = currentChoices[idx];
+    const synPrev = computeDraftCardSynergyPreview(upgradeStacks, picked.id, activeHero);
     upgradeStacks[picked.id] = (upgradeStacks[picked.id] || 0) + 1;
     totalUpgradesPicked++;
 
@@ -3772,6 +4348,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     buildStats = computeGenjiBuildStats(upgradeStacks);
     gunnerStats = computeGunnerBuildStats(upgradeStacks);
     hanzoStats = computeHanzoBuildStats(upgradeStacks);
+    synergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
     player.maxHealth =
       activeHero === 'gunner'
         ? gunnerStats.maxHealth
@@ -3785,6 +4362,12 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     gunnerWeapon.ammo = gunnerStats.magSize;
     hanzoLungeChargesLeft = hanzoStats.maxAirJumps;
     audio.upgradePick();
+    if (synPrev && G.hud && typeof G.hud.feed === 'function') {
+      const matched = synergySummary.active.find((s) => s.id === synPrev.synergyId);
+      G.hud.feed(
+        `<b>✦ ${synPrev.badgeLabel}</b><em>${matched ? matched.description : '跨流派秘契已激活'}</em>`
+      );
+    }
     renderBuildStrip();
 
     if (pendingDraftCount > 0) {
@@ -3877,6 +4460,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       });
     }
 
+    synergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
     renderBuildStrip();
     if (G.hud && typeof G.hud.update === 'function') {
       G.hud.update(0.016);
@@ -3894,6 +4478,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     buildStats = createBaseGenjiStats();
     gunnerStats = createBaseGunnerStats();
     hanzoStats = createBaseHanzoStats();
+    synergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
+    mobilityEmpowerT = 0;
+    precisionBurstCd = 0;
+    gunnerSprintAmmoFrac = 0;
     renderBuildStrip();
     clearVillageShrineEvent();
     flushWorldProjectiles();
@@ -3904,6 +4492,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     colossusRoot.visible = false;
     colTelegraphMesh.visible = false;
     colShockwaveMesh.visible = false;
+    colThunderRingsInst.visible = false;
+    tacticalProps.reset();
     for (const arc of bossFlameArcs) {
       arc.active = false;
       arc.mesh.visible = false;
@@ -4647,6 +5237,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     spawnQueue = [...currentWavePlan.spawns];
     spawnTimer = 0.3;
     waveClearDelay = -1;
+    tacticalProps.onWaveStart();
 
     clearVillageShrineEvent();
     if (currentWavePlan.isHarborEvent) {
@@ -4711,6 +5302,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     buildStats = createBaseGenjiStats();
     gunnerStats = createBaseGunnerStats();
     hanzoStats = createBaseHanzoStats();
+    synergySummary = evaluateBuildSynergies(upgradeStacks, activeHero);
+    mobilityEmpowerT = 0;
+    precisionBurstCd = 0;
+    gunnerSprintAmmoFrac = 0;
     renderBuildStrip();
 
     const startUlt = G.params && G.params.ult ? clamp(+G.params.ult, 0, 100) : 25;
@@ -4756,12 +5351,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     colossusRoot.visible = false;
     colTelegraphMesh.visible = false;
     colShockwaveMesh.visible = false;
+    colThunderRingsInst.visible = false;
     for (const arc of bossFlameArcs) {
       arc.active = false;
       arc.mesh.visible = false;
     }
     hitstopT = 0;
     fovKick = 0;
+    tacticalProps.reset();
     combatVfx.reset();
     for (const sp of deflectSpears) sp.active = false;
     deflectOuterInst.count = 0;
@@ -5047,6 +5644,20 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
 
     runStats.time += dt;
     parryBannerT = Math.max(0, parryBannerT - dt);
+    mobilityEmpowerT = Math.max(0, mobilityEmpowerT - dt);
+    precisionBurstCd = Math.max(0, precisionBurstCd - dt);
+
+    // Gunner `gale_volley` (`机动火力链`): sprinting auto-feeds ammo & refreshes 3.0s mobility weapon amp
+    if (activeHero === 'gunner' && gunnerCd.sprintActive && synergySummary.mobilityEmpowerRatio > 0) {
+      mobilityEmpowerT = 3.0;
+      const feedRate = synergySummary.tiers.gale_volley === 2 ? 14 : 8;
+      gunnerSprintAmmoFrac += feedRate * dt;
+      const addRounds = Math.floor(gunnerSprintAmmoFrac);
+      if (addRounds >= 1) {
+        gunnerSprintAmmoFrac -= addRounds;
+        gunnerWeapon.ammo = Math.min(gunnerStats.magSize, gunnerWeapon.ammo + addRounds);
+      }
+    }
 
     // Tick Genji, Gunner & Hanzo Cooldowns + Biotic Tactical Field Healing Aura
     cdState.swiftCd = Math.max(0, cdState.swiftCd - dt);
@@ -5127,6 +5738,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     updateColossalBoss(dt);
     updateSpecialEnemyBehaviors(dt);
     updateVillageShrineInteraction(dt);
+    tacticalProps.update(dt, player);
     combatVfx.update(dt);
 
     // Trickle-spawn wave enemies up to `maxConcurrent`
@@ -5213,6 +5825,10 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     gunnerWeapon,
     hanzoWeapon,
     combatVfx,
+    tacticalProps,
+    get synergies() {
+      return synergySummary;
+    },
     get hero() {
       return activeHero;
     },
@@ -5273,6 +5889,8 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         hanzoPool: hanzoWeapon.getPoolDiagnostics(),
         enemyPool: getEnemyPoolDiagnostics(),
         combatBatching: combatVfx.sampleTelemetry(),
+        tacticalProps: tacticalProps.getDiagnostics(),
+        synergies: synergySummary,
       };
     },
     getActiveProjectileStats() {

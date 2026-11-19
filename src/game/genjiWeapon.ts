@@ -1645,6 +1645,9 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
   }
 
   function damageDestructiblesAround(center: any, radius: number, damage: number, dir: any) {
+    if (G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+      G.tacticalProps.damageSphere(center, radius, damage);
+    }
     if (G.level && G.level.damageInRadius) {
       const hitCount = G.level.damageInRadius(center, radius, damage, dir);
       if (hitCount > 0) {
@@ -2073,19 +2076,32 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
             G.level && G.level.raycastDestructible
               ? G.level.raycastDestructible(s.pos, s.dir, stepDist)
               : null;
+          const pHit =
+            G.tacticalProps && typeof G.tacticalProps.raycast === 'function'
+              ? G.tacticalProps.raycast(s.pos, s.dir, stepDist)
+              : null;
           const wHit = raycastWorldSafe(s.pos, s.dir, stepDist);
-          const wallDist = Math.min(dHit ? dHit.dist : Infinity, wHit ? wHit.dist : Infinity);
+          const wallDist = Math.min(
+            dHit ? dHit.dist : Infinity,
+            pHit ? pHit.dist : Infinity,
+            wHit ? wHit.dist : Infinity
+          );
           const maxRay = Number.isFinite(wallDist) ? wallDist : stepDist;
           const eHit = G.enemies.raycast(s.pos, s.dir, maxRay);
           const cHit = cb.raycastColossalBoss
             ? cb.raycastColossalBoss(s.pos, s.dir, eHit ? eHit.dist : maxRay)
             : null;
+          const tacMult =
+            typeof G.getTacticalDamageMultiplier === 'function'
+              ? G.getTacticalDamageMultiplier()
+              : 1.0;
 
           if (cHit && cb.damageColossalBoss) {
             spawnBeam(s.prevPos, cHit.point, 0.18, 0.62);
             spawnParryBurst(cHit.point, cHit.orbIndex >= 0);
+            const scaledBossDmg = Math.round(s.damage * tacMult);
             const cRes = cb.damageColossalBoss(
-              s.damage,
+              scaledBossDmg,
               cHit.point,
               s.dir,
               cHit.orbIndex,
@@ -2105,7 +2121,7 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
             const en = eHit.enemy;
             s.hitIds.add(en.id);
             const isWeak = eHit.part === 'weak';
-            const dmg = s.damage * (isWeak ? 2.0 : 1.0);
+            const dmg = Math.round(s.damage * (isWeak ? 2.0 : 1.0) * tacMult);
             const killed = en.damage(dmg, eHit.point, s.dir, eHit.part) === true;
 
             spawnBeam(s.prevPos, eHit.point, 0.17, 0.58);
@@ -2143,6 +2159,17 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
               s.pierceLeft--;
               if (advancePiercedShurikenSafely(s, eHit.point, 0.34)) continue;
             } else if (finishShurikenOnImpact(s, eHit.point)) {
+              continue;
+            }
+          } else if (
+            pHit &&
+            (!dHit || pHit.dist <= dHit.dist) &&
+            (!wHit || pHit.dist <= wHit.dist + 0.08)
+          ) {
+            spawnBeam(s.prevPos, pHit.point, 0.17, 0.56);
+            G.tacticalProps.triggerHit(pHit.propIndex, Math.round(s.damage * tacMult), pHit.point, s.dir);
+            if (G.combat && G.combat.stats) G.combat.stats.hits++;
+            if (finishShurikenOnImpact(s, pHit.point)) {
               continue;
             }
           } else if (dHit && dHit.item && (!wHit || dHit.dist <= wHit.dist + 0.08)) {
@@ -2259,6 +2286,9 @@ export function createGenjiWeapon(G: any, cb: GenjiWeaponCallbacks) {
       waveAlphaData[waveIdx] = Math.min(1, w.life / Math.min(0.18, w.maxLife));
       waveIdx++;
 
+      if (w.damage > 0 && G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+        G.tacticalProps.damageSphere(w.pos, w.radius + 0.8, w.damage);
+      }
       if (w.damage > 0 && G.level && Array.isArray(G.level.destructibles)) {
         for (const bldg of G.level.destructibles) {
           if (!bldg || bldg.state.stage === 'destroyed' || w.hitBldgIds.has(bldg.id)) continue;

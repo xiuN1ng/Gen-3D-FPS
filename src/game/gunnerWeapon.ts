@@ -1359,6 +1359,9 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       if (dPlayer < 18) G.player.addShake(clamp(0.32 * (1 - dPlayer / 18), 0.06, 0.32));
     }
 
+    if (G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+      G.tacticalProps.damageSphere(impactPt, r.splashRadius, r.directDamage + r.splashDamage);
+    }
     if (G.level && G.level.damageInRadius) {
       const broken = G.level.damageInRadius(
         impactPt,
@@ -1370,9 +1373,11 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     }
 
     const bioticMult = cb.isInBioticField() ? 1.2 : 1.0;
+    const tacMult =
+      typeof G.getTacticalDamageMultiplier === 'function' ? G.getTacticalDamageMultiplier() : 1.0;
 
     if (cb.cleaveColossalBoss) {
-      const totalCleave = Math.round((r.directDamage + r.splashDamage) * bioticMult);
+      const totalCleave = Math.round((r.directDamage + r.splashDamage) * bioticMult * tacMult);
       const cRes = cb.cleaveColossalBoss(
         impactPt,
         r.splashRadius + 1.6,
@@ -1412,7 +1417,10 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
 
         const falloff = isDirect ? 1 : clamp(1 - dist / (r.splashRadius * 1.18), 0.42, 1);
         const dmg = Math.round(
-          (isDirect ? r.directDamage + r.splashDamage : r.splashDamage) * falloff * bioticMult
+          (isDirect ? r.directDamage + r.splashDamage : r.splashDamage) *
+            falloff *
+            bioticMult *
+            tacMult
         );
         const killed = en.damage(dmg, _v1, r.dir, 'splash') === true;
         if (G.combat && G.combat.stats) G.combat.stats.hits++;
@@ -1447,6 +1455,9 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     const cam = G.camera;
     _fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
     _v3.copy(cam.position).addScaledVector(_fwd, 1.9);
+    if (G.tacticalProps && typeof G.tacticalProps.damageSphere === 'function') {
+      G.tacticalProps.damageSphere(_v3, 2.3, 68);
+    }
     if (G.level && G.level.damageInRadius) {
       G.level.damageInRadius(_v3, 2.2, 68, _fwd);
     }
@@ -1479,6 +1490,8 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
 
   function updateWorldProjectiles(dt: number, visualOnly = false) {
     const stats = cb.getStats();
+    const tacMult =
+      typeof G.getTacticalDamageMultiplier === 'function' ? G.getTacticalDamageMultiplier() : 1.0;
 
     // 1. Update Heavy Pulse Bolts
     let instIdx = 0;
@@ -1502,12 +1515,16 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
           G.level && typeof G.level.raycastDestructible === 'function'
             ? G.level.raycastDestructible(b.prev, _v1, wHit ? wHit.dist + 0.08 : stepDist + 0.12)
             : null;
+        const pHit =
+          G.tacticalProps && typeof G.tacticalProps.raycast === 'function'
+            ? G.tacticalProps.raycast(b.prev, _v1, wHit ? wHit.dist + 0.08 : stepDist + 0.12)
+            : null;
         const eHit = G.enemies ? G.enemies.raycast(b.prev, _v1, stepDist + 0.28) : null;
         const cHit = cb.raycastColossalBoss
           ? cb.raycastColossalBoss(b.prev, _v1, stepDist + 0.32)
           : null;
 
-        let bestType: 'none' | 'world' | 'destructible' | 'enemy' | 'colossus' = 'none';
+        let bestType: 'none' | 'world' | 'destructible' | 'tacticalProp' | 'enemy' | 'colossus' = 'none';
         let bestDist = stepDist;
         if (wHit && wHit.dist <= bestDist) {
           bestDist = wHit.dist;
@@ -1516,6 +1533,10 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
         if (dHit && dHit.dist <= bestDist + 0.06) {
           bestDist = dHit.dist;
           bestType = 'destructible';
+        }
+        if (pHit && pHit.dist <= bestDist + 0.06) {
+          bestDist = pHit.dist;
+          bestType = 'tacticalProp';
         }
         if (eHit && eHit.dist <= bestDist + 0.14 && !b.hitIds.has(eHit.enemy.id)) {
           bestDist = eHit.dist;
@@ -1539,7 +1560,7 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
           overchargeStreak = Math.min(10, overchargeStreak + 1);
           overchargeDecayT = 1.65;
 
-          const dmg = shotRes.damage;
+          const dmg = Math.max(1, Math.round(shotRes.damage * tacMult));
           const killed = eHit.enemy.damage(dmg, eHit.point, _v1, isHead ? 'weak' : 'body') === true;
           if (G.combat && G.combat.stats) G.combat.stats.hits++;
           if (stats.visorLifestealRatio > 0 && G.player) {
@@ -1574,12 +1595,19 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
           overchargeStreak = Math.min(10, overchargeStreak + 1);
           overchargeDecayT = 1.65;
 
-          const res = cb.damageColossalBoss(shotRes.damage, cHit.point, _v1, cHit.orbIndex, 'rifle');
+          const scaledColDmg = Math.max(1, Math.round(shotRes.damage * tacMult));
+          const res = cb.damageColossalBoss(scaledColDmg, cHit.point, _v1, cHit.orbIndex, 'rifle');
           if (G.combat && G.combat.stats) G.combat.stats.hits++;
           cb.audio.bulletHitConfirm(isWeak);
           spawnBulletImpactFx(cHit.point, _v1, true, isWeak);
-          cb.onDamageDealt(shotRes.damage, null, res.killed, isWeak, 'rifle');
+          cb.onDamageDealt(scaledColDmg, null, res.killed, isWeak, 'rifle');
           b.impactPoint.copy(cHit.point);
+          b.impactResolved = true;
+        } else if (bestType === 'tacticalProp' && pHit) {
+          G.tacticalProps.triggerHit(pHit.propIndex, Math.round(b.damage * tacMult), pHit.point, _v1);
+          if (G.combat && G.combat.stats) G.combat.stats.hits++;
+          spawnBulletImpactFx(pHit.point, _v1, true, false);
+          b.impactPoint.copy(pHit.point);
           b.impactResolved = true;
         } else if (bestType === 'destructible' && dHit) {
           if (G.level && typeof G.level.damageDestructible === 'function') {
