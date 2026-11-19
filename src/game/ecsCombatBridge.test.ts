@@ -534,11 +534,17 @@ test('EcsCombatBridge accelerates high-density projectile & separation queries (
   };
 
   // JIT warmup
-  runCombatBatch(true, 10);
-  runCombatBatch(false, 10);
+  runCombatBatch(true, 12);
+  runCombatBatch(false, 12);
 
-  const spatialMs = runCombatBatch(true, 40);
-  const legacyMs = runCombatBatch(false, 40);
+  let spatialMs = Infinity;
+  let legacyMs = Infinity;
+  for (let round = 0; round < 5; round++) {
+    const sMs = runCombatBatch(true, 16);
+    const lMs = runCombatBatch(false, 16);
+    if (sMs < spatialMs) spatialMs = sMs;
+    if (lMs < legacyMs) legacyMs = lMs;
+  }
   const speedup = legacyMs / Math.max(0.001, spatialMs);
   console.log(
     `[bench:ecsCombat] 180 enemies + 160 rays + 180 sep: Spatial=${spatialMs.toFixed(3)}ms/f vs Legacy=${legacyMs.toFixed(3)}ms/f (${speedup.toFixed(2)}x speedup)`,

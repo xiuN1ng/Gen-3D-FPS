@@ -65,6 +65,10 @@ import {
   PROJECTILE_KIND,
   type EcsCombatBridge,
 } from './ecsCombatBridge.ts';
+import {
+  createCombatFeelVfx,
+  type CombatFeelVfxController,
+} from './combatFeelVfx.ts';
 import { createGenjiAudio, type GenjiAudioController } from './genjiAudio.ts';
 import { createGenjiWeapon } from './genjiWeapon.ts';
 import { createGunnerWeapon } from './gunnerWeapon.ts';
@@ -329,6 +333,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     fovKick = Math.min(10.5, fovKick + 3.0);
   }
 
+  // --- Install GPU-Instanced Combat Feel VFX & Batching Telemetry Controller ---
+  const combatVfx: CombatFeelVfxController =
+    G.combatVfx ?? (G.combatVfx = createCombatFeelVfx(G));
+
+  function applyHeavyHitstop(sec: number, fovPunchDeg = 0) {
+    const clamped = clamp(sec, 0, 0.065);
+    if (clamped > hitstopT) {
+      hitstopT = clamped;
+      combatVfx.notifyHitstop(clamped);
+    }
+    if (fovPunchDeg > 0) {
+      fovKick = Math.min(10.5, fovKick + fovPunchDeg);
+    }
+  }
+
   // --- Install Genji Procedural First-Person Weapon, Custom GLSL Dragon & Sword-Ki VFX ---
   const genjiWeapon = createGenjiWeapon(G, {
     getStats: () => buildStats,
@@ -344,10 +363,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     cleaveColossalBoss: (center, radius, amount, dir, source) =>
       cleaveColossalBoss(center, radius, amount, dir, source),
     onHeavyHit(sec: number, fovPunchDeg = 0) {
-      hitstopT = Math.max(hitstopT, clamp(sec, 0, 0.065));
-      if (fovPunchDeg > 0) {
-        fovKick = Math.min(10.5, fovKick + fovPunchDeg);
-      }
+      applyHeavyHitstop(sec, fovPunchDeg);
     },
     onDamageDealt(amount, _enemy, _killed, weak, source) {
       if (amount > 0) {
@@ -422,10 +438,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       };
     },
     onHeavyHit(sec: number, fovPunchDeg = 0) {
-      hitstopT = Math.max(hitstopT, clamp(sec, 0, 0.065));
-      if (fovPunchDeg > 0) {
-        fovKick = Math.min(10.5, fovKick + fovPunchDeg);
-      }
+      applyHeavyHitstop(sec, fovPunchDeg);
     },
     onDamageDealt(amount) {
       if (amount > 0) {
@@ -470,10 +483,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     cleaveColossalBoss: (center, radius, amount, dir, source) =>
       cleaveColossalBoss(center, radius, amount, dir, source),
     onHeavyHit(sec: number, fovPunchDeg = 0) {
-      hitstopT = Math.max(hitstopT, clamp(sec, 0, 0.065));
-      if (fovPunchDeg > 0) {
-        fovKick = Math.min(10.5, fovKick + fovPunchDeg);
-      }
+      applyHeavyHitstop(sec, fovPunchDeg);
     },
     onDamageDealt(amount, _enemy, _killed, _weak, source) {
       if (amount > 0 && source !== 'dragonstrike') {
@@ -976,6 +986,9 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     const jumpHeld = G.input.down('jump') || isKeyHeld(['Space']) || touchCtrl.isJumpHeld();
 
     origPlayerUpdate(dt);
+    if (G.camera && G.camera.rotation) {
+      G.camera.rotation.z += combatVfx.getCameraRollOffset();
+    }
     enforcePlayerAirWall();
 
     if (!player.alive || !player.enabled) return;
@@ -1481,6 +1494,21 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       faction: 0,
       items: deflectSpears,
       isActive: (sp) => sp.active,
+    });
+  }
+
+  combatVfx.registerBatch({
+    name: 'genji_deflect_spears',
+    meshes: [deflectOuterInst, deflectCoreInst],
+    getActiveCount: () => deflectOuterInst.count,
+    legacyMeshesPerItem: 2,
+  });
+  if (G.enemies && G.enemies.debug && G.enemies.debug.boltMesh) {
+    combatVfx.registerBatch({
+      name: 'enemy_bolts',
+      meshes: [G.enemies.debug.boltMesh],
+      getActiveCount: () => G.enemies.debug.boltMesh.count,
+      legacyMeshesPerItem: 1,
     });
   }
 
@@ -3001,6 +3029,14 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       if (colOrbMeshes[idx]) colOrbMeshes[idx].visible = false;
       audio.orbShatter();
       genjiWeapon.spawnParryBurst(hitPoint, true);
+      combatVfx.triggerImpact({
+        point: hitPoint,
+        dir: player.forward,
+        weak: true,
+        killed: false,
+        heavy: true,
+        colorHex: 0xffe066,
+      });
       colTelegraphMesh.visible = false;
       // Shattering a Raijin orb resets mobility & grants +18% ultimate charge!
       cdState.swiftCd = 0;
@@ -3012,8 +3048,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       cdState.ultCharge = clamp(cdState.ultCharge + 18, 0, 100);
       gunnerCd.ultCharge = clamp(gunnerCd.ultCharge + 18, 0, 100);
       hanzoCd.ultCharge = clamp(hanzoCd.ultCharge + 18, 0, 100);
-      hitstopT = Math.max(hitstopT, 0.055);
-      fovKick = Math.min(10.5, fovKick + 3.8);
+      applyHeavyHitstop(0.055, 3.8);
       player.addShake(0.32);
       G.hud.warn('雷鼓击碎 · 巨型荒神破势眩晕！技能已重置！', 2.4);
       G.hud.feed('<b>击碎荒神雷鼓弱点</b><em>造成 12% 最大生命崩解伤害 · 技能刷新</em>');
@@ -3044,11 +3079,18 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
       pendingDraftCount++;
       pendingGuaranteedRare = true;
       runStats.kills += 5;
-      hitstopT = Math.max(hitstopT, 0.065);
-      fovKick = Math.min(10.5, fovKick + 5.2);
+      applyHeavyHitstop(0.065, 5.2);
       player.addShake(0.5);
+      _colTmpA.set(colossusPos.x, colossusPos.y + 3.5, colossusPos.z);
+      combatVfx.triggerImpact({
+        point: _colTmpA,
+        dir: player.forward,
+        weak: true,
+        killed: true,
+        heavy: true,
+        colorHex: 0xffcc55,
+      });
       if (G.render && G.render.lightPool) {
-        _colTmpA.set(colossusPos.x, colossusPos.y + 3.5, colossusPos.z);
         G.render.lightPool.flash(_colTmpA, 0xffcc55, 130, 28, 0.55);
       }
       G.hud.warn('巨型荒神讨伐成功 · 获赐奥义秘传！', 3.4);
@@ -4720,6 +4762,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     }
     hitstopT = 0;
     fovKick = 0;
+    combatVfx.reset();
     for (const sp of deflectSpears) sp.active = false;
     deflectOuterInst.count = 0;
     deflectCoreInst.count = 0;
@@ -4981,13 +5024,15 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     syncHeroWeaponVisibility();
     updateDynamicCameraFov(dt);
 
-    // Sim-Level Hitstop
+    // Sim-Level Hitstop with Asymmetric Time-Dilation Recovery Curve
     if (hitstopT > 0) {
       hitstopT = Math.max(0, hitstopT - dt);
+      const visScale = combatVfx.getHitstopVisualScale(hitstopT);
       parryBannerT = Math.max(0, parryBannerT - dt * 0.5);
-      if (activeHero === 'gunner') gunnerWeapon.updateVisualsOnly(dt * 0.45);
-      else if (activeHero === 'hanzo') hanzoWeapon.updateVisualsOnly(dt * 0.45);
-      else genjiWeapon.updateVisualsOnly(dt * 0.45);
+      if (activeHero === 'gunner') gunnerWeapon.updateVisualsOnly(dt * visScale);
+      else if (activeHero === 'hanzo') hanzoWeapon.updateVisualsOnly(dt * visScale);
+      else genjiWeapon.updateVisualsOnly(dt * visScale);
+      combatVfx.update(dt * Math.max(0.28, visScale));
       syncGenjiHud();
       return false;
     }
@@ -5082,6 +5127,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     updateColossalBoss(dt);
     updateSpecialEnemyBehaviors(dt);
     updateVillageShrineInteraction(dt);
+    combatVfx.update(dt);
 
     // Trickle-spawn wave enemies up to `maxConcurrent`
     const aliveNow = G.enemies.aliveCount();
@@ -5166,6 +5212,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
     genjiWeapon,
     gunnerWeapon,
     hanzoWeapon,
+    combatVfx,
     get hero() {
       return activeHero;
     },
@@ -5225,6 +5272,7 @@ export function installGenjiRoguelikeMode(G: any, menuFactory: (g: any, handlers
         genjiBlade: genjiWeapon.getBladeDiagnostics(),
         hanzoPool: hanzoWeapon.getPoolDiagnostics(),
         enemyPool: getEnemyPoolDiagnostics(),
+        combatBatching: combatVfx.sampleTelemetry(),
       };
     },
     getActiveProjectileStats() {

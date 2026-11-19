@@ -22,10 +22,12 @@ import {
   type VisorCandidate,
 } from './roguelike.ts';
 import { clamp, damp } from './rules.ts';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   PROJECTILE_KIND,
   type EcsCombatBridge,
 } from './ecsCombatBridge.ts';
+import type { CombatFeelVfxController } from './combatFeelVfx.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildMasterworkPulseRifleRig,
@@ -382,56 +384,85 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
 
   const MAX_IMPACT_RINGS = 18;
   const impactRingGeo = new THREE.PlaneGeometry(0.52, 0.52);
+  const impactRingInstData = new Float32Array(MAX_IMPACT_RINGS * 4);
+  const impactRingInstAttr = new THREE.InstancedBufferAttribute(impactRingInstData, 4);
+  impactRingInstAttr.setUsage(THREE.DynamicDrawUsage);
+  impactRingGeo.setAttribute('aInstData', impactRingInstAttr);
+
+  const sharedImpactRingMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute vec4 aInstData;
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying float vProgress;
+      void main() {
+        vUv = uv * 2.0 - 1.0;
+        vColor = aInstData.xyz;
+        vProgress = aInstData.w;
+        #ifdef USE_INSTANCING
+          vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        #else
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        #endif
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying float vProgress;
+      void main() {
+        float r = length(vUv);
+        if (r > 1.0) discard;
+        float ringR = mix(0.22, 0.92, vProgress);
+        float band = exp(-pow((r - ringR) * 8.5, 2.0));
+        float fade = 1.0 - smoothstep(0.35, 1.0, vProgress);
+        float a = band * fade * smoothstep(1.0, 0.85, r);
+        if (a < 0.015) discard;
+        vec3 col = mix(vColor, vec3(0.96, 0.99, 1.0), band * 0.62);
+        gl_FragColor = vec4(col * 2.2, clamp(a, 0.0, 0.90));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+
+  const impactRingInstMesh = new THREE.InstancedMesh(
+    impactRingGeo,
+    sharedImpactRingMat,
+    MAX_IMPACT_RINGS,
+  );
+  impactRingInstMesh.frustumCulled = false;
+  impactRingInstMesh.count = 0;
+  impactRingInstMesh.visible = false;
+  impactRingInstMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(impactRingInstMesh);
+
   interface ImpactRing {
     active: boolean;
     life: number;
     maxLife: number;
     maxScale: number;
-    mesh: any;
-    uniforms: any;
+    pos: any;
+    colR: number;
+    colG: number;
+    colB: number;
   }
   const impactRingPool: ImpactRing[] = [];
   for (let i = 0; i < MAX_IMPACT_RINGS; i++) {
-    const uniforms = {
-      uProgress: { value: 0 },
-      uColor: { value: new THREE.Color(0x56ecff) },
-    };
-    const ringMat = new THREE.ShaderMaterial({
-      uniforms,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv * 2.0 - 1.0;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform float uProgress;
-        uniform vec3 uColor;
-        varying vec2 vUv;
-        void main() {
-          float r = length(vUv);
-          if (r > 1.0) discard;
-          float ringR = mix(0.22, 0.92, uProgress);
-          float band = exp(-pow((r - ringR) * 8.5, 2.0));
-          float fade = 1.0 - smoothstep(0.35, 1.0, uProgress);
-          float a = band * fade * smoothstep(1.0, 0.85, r);
-          if (a < 0.015) discard;
-          vec3 col = mix(uColor, vec3(0.96, 0.99, 1.0), band * 0.62);
-          gl_FragColor = vec4(col * 2.2, clamp(a, 0.0, 0.90));
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      toneMapped: false,
+    impactRingPool.push({
+      active: false,
+      life: 0,
+      maxLife: 0.16,
+      maxScale: 1.4,
+      pos: new THREE.Vector3(),
+      colR: 0.34,
+      colG: 0.93,
+      colB: 1.0,
     });
-    const m = new THREE.Mesh(impactRingGeo, ringMat);
-    m.visible = false;
-    m.frustumCulled = false;
-    worldGroup.add(m);
-    impactRingPool.push({ active: false, life: 0, maxLife: 0.16, maxScale: 1.4, mesh: m, uniforms });
   }
 
   interface ActivePulseBolt {
@@ -475,7 +506,7 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     });
   }
 
-  // (D) Helix Rockets (`螺旋飞弹` — high-craft finned warhead + blazing corkscrew plasma plume!)
+  // (D) Helix Rockets (`螺旋飞弹` — 120 individual Meshes batched into 5 GPU InstancedMeshes!)
   const MAX_ROCKETS = 20;
   interface ActiveHelixRocket {
     active: boolean;
@@ -493,32 +524,45 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     splashRadius: number;
     life: number;
     homing: boolean;
-    mesh: any;
   }
 
   const rocketPool: ActiveHelixRocket[] = [];
-  const rocketNoseGeo = new THREE.ConeGeometry(0.068, 0.22, 10).rotateX(-Math.PI / 2);
+  const rocketNoseGeo = new THREE.ConeGeometry(0.068, 0.22, 10)
+    .rotateX(-Math.PI / 2)
+    .translate(0, 0, -0.22);
   const rocketTubeGeo = new THREE.CylinderGeometry(0.062, 0.066, 0.26, 10).rotateX(Math.PI / 2);
-  const rocketFinGeo = new THREE.BoxGeometry(0.22, 0.012, 0.09);
-  const rocketPlumeGeo = new THREE.CylinderGeometry(0.018, 0.11, 0.72, 12, 1, true).rotateX(Math.PI / 2);
+  const rocketFinGeoA = new THREE.BoxGeometry(0.22, 0.012, 0.09).translate(0, 0, 0.08);
+  const rocketFinGeoB = new THREE.BoxGeometry(0.22, 0.012, 0.09)
+    .rotateZ(Math.PI / 2)
+    .translate(0, 0, 0.08);
+  const rocketCrossFinGeo =
+    mergeGeometries([rocketFinGeoA, rocketFinGeoB], false) || rocketFinGeoA.clone();
+  rocketFinGeoA.dispose();
+  rocketFinGeoB.dispose();
+  const rocketPlumeGeo = new THREE.CylinderGeometry(0.018, 0.11, 0.72, 12, 1, true)
+    .rotateX(Math.PI / 2)
+    .translate(0, 0, 0.44);
+  const rocketCoreGeo = new THREE.SphereGeometry(0.068, 8, 6).translate(0, 0, 0.15);
+
+  const makeRocketInstLayer = (geo: any, mat: any) => {
+    const im = new THREE.InstancedMesh(geo, mat, MAX_ROCKETS);
+    im.frustumCulled = false;
+    im.castShadow = false;
+    im.receiveShadow = false;
+    im.count = 0;
+    im.visible = false;
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    worldGroup.add(im);
+    return im;
+  };
+
+  const rocketNoseInst = makeRocketInstLayer(rocketNoseGeo, pbrMats.crimsonAnodized);
+  const rocketBodyInst = makeRocketInstLayer(rocketTubeGeo, pbrMats.ceramicShroud);
+  const rocketFinInst = makeRocketInstLayer(rocketCrossFinGeo, pbrMats.gunmetal);
+  const rocketPlumeInst = makeRocketInstLayer(rocketPlumeGeo, matRocketPlumeShader);
+  const rocketCoreInst = makeRocketInstLayer(rocketCoreGeo, matPulseCore);
 
   for (let i = 0; i < MAX_ROCKETS; i++) {
-    const grp = new THREE.Group();
-    const nose = new THREE.Mesh(rocketNoseGeo, pbrMats.crimsonAnodized);
-    nose.position.z = -0.22;
-    const body = new THREE.Mesh(rocketTubeGeo, pbrMats.ceramicShroud);
-    const finA = new THREE.Mesh(rocketFinGeo, pbrMats.gunmetal);
-    finA.position.z = 0.08;
-    const finB = finA.clone();
-    finB.rotation.z = Math.PI / 2;
-    const plume = new THREE.Mesh(rocketPlumeGeo, matRocketPlumeShader);
-    plume.position.z = 0.44;
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.068, 8, 6), matPulseCore);
-    core.position.z = 0.15;
-    grp.add(nose, body, finA, finB, plume, core);
-    grp.visible = false;
-    grp.frustumCulled = false;
-    worldGroup.add(grp);
     rocketPool.push({
       active: false,
       basePos: new THREE.Vector3(),
@@ -535,7 +579,6 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       splashRadius: 4.8,
       life: 0,
       homing: false,
-      mesh: grp,
     });
   }
 
@@ -559,68 +602,141 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     });
   }
 
-  // (E) Turbulent Plasma Fireball & Shockwave Spheres (`螺旋飞弹热核冲击云`, zero plastic icosahedrons!)
+  // (E) Turbulent Plasma Fireball & Shockwave Spheres (`螺旋飞弹热核冲击云` — 12 Meshes -> 1 GPU InstancedMesh!)
   const MAX_BLASTS = 12;
   interface ActiveBlast {
     active: boolean;
     life: number;
     maxLife: number;
     maxRadius: number;
-    mesh: any;
-    uniforms: any;
+    pos: any;
+    rotY: number;
   }
   const blastPool: ActiveBlast[] = [];
   const blastGeo = new THREE.SphereGeometry(1, 24, 16);
-  for (let i = 0; i < MAX_BLASTS; i++) {
-    const uniforms = {
+  const blastProgressData = new Float32Array(MAX_BLASTS);
+  const blastProgressAttr = new THREE.InstancedBufferAttribute(blastProgressData, 1);
+  blastProgressAttr.setUsage(THREE.DynamicDrawUsage);
+  blastGeo.setAttribute('aProgress', blastProgressAttr);
+
+  const sharedBlastMat = new THREE.ShaderMaterial({
+    uniforms: {
       uTime: gunnerShaderClock,
-      uProgress: { value: 0 },
-    };
-    const blastMat = new THREE.ShaderMaterial({
-      uniforms,
-      vertexShader: `
-        varying vec3 vNormalV;
-        varying vec3 vViewDir;
-        varying vec3 vObjPos;
-        void main() {
-          vObjPos = position;
+    },
+    vertexShader: `
+      attribute float aProgress;
+      varying vec3 vNormalV;
+      varying vec3 vViewDir;
+      varying vec3 vObjPos;
+      varying float vProgress;
+      void main() {
+        vObjPos = position;
+        vProgress = aProgress;
+        #ifdef USE_INSTANCING
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+          vNormalV = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+        #else
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           vNormalV = normalize(normalMatrix * normal);
-          vViewDir = normalize(-mv.xyz);
-          gl_Position = projectionMatrix * mv;
-        }
-      `,
-      fragmentShader: `
-        uniform float uTime;
-        uniform float uProgress;
-        varying vec3 vNormalV;
-        varying vec3 vViewDir;
-        varying vec3 vObjPos;
-        void main() {
-          float ndv = abs(dot(normalize(vNormalV), normalize(vViewDir)));
-          float silhouetteSoft = pow(ndv, 1.45);
-          float turb = 0.5 + 0.5 * sin(vObjPos.x * 9.0 + uTime * 18.0 + cos(vObjPos.y * 11.0 - vObjPos.z * 8.0) * 2.2);
-          float hotCore = pow(ndv, 2.8) * (1.0 - uProgress * 0.75);
-          float shockShell = exp(-pow((ndv - 0.36) * 4.5, 2.0)) * (1.0 - smoothstep(0.45, 1.0, uProgress));
-          float fade = 1.0 - smoothstep(0.28, 1.0, uProgress);
-          float a = (silhouetteSoft * (0.42 + turb * 0.48) + shockShell * 0.45) * fade;
-          if (a < 0.015) discard;
-          vec3 col = mix(vec3(1.0, 0.30, 0.06), vec3(1.0, 0.82, 0.28), turb);
-          col = mix(col, vec3(1.0, 0.98, 0.86), clamp(hotCore * 1.4, 0.0, 1.0));
-          gl_FragColor = vec4(col * 2.4, clamp(a, 0.0, 0.94));
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      toneMapped: false,
+        #endif
+        vViewDir = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec3 vNormalV;
+      varying vec3 vViewDir;
+      varying vec3 vObjPos;
+      varying float vProgress;
+      void main() {
+        float ndv = abs(dot(normalize(vNormalV), normalize(vViewDir)));
+        float silhouetteSoft = pow(ndv, 1.45);
+        float turb = 0.5 + 0.5 * sin(vObjPos.x * 9.0 + uTime * 18.0 + cos(vObjPos.y * 11.0 - vObjPos.z * 8.0) * 2.2);
+        float hotCore = pow(ndv, 2.8) * (1.0 - vProgress * 0.75);
+        float shockShell = exp(-pow((ndv - 0.36) * 4.5, 2.0)) * (1.0 - smoothstep(0.45, 1.0, vProgress));
+        float fade = 1.0 - smoothstep(0.28, 1.0, vProgress);
+        float a = (silhouetteSoft * (0.42 + turb * 0.48) + shockShell * 0.45) * fade;
+        if (a < 0.015) discard;
+        vec3 col = mix(vec3(1.0, 0.30, 0.06), vec3(1.0, 0.82, 0.28), turb);
+        col = mix(col, vec3(1.0, 0.98, 0.86), clamp(hotCore * 1.4, 0.0, 1.0));
+        gl_FragColor = vec4(col * 2.4, clamp(a, 0.0, 0.94));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+
+  const blastInstMesh = new THREE.InstancedMesh(blastGeo, sharedBlastMat, MAX_BLASTS);
+  blastInstMesh.frustumCulled = false;
+  blastInstMesh.count = 0;
+  blastInstMesh.visible = false;
+  blastInstMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(blastInstMesh);
+
+  for (let i = 0; i < MAX_BLASTS; i++) {
+    blastPool.push({
+      active: false,
+      life: 0,
+      maxLife: 0.30,
+      maxRadius: 4.8,
+      pos: new THREE.Vector3(),
+      rotY: 0,
     });
-    const m = new THREE.Mesh(blastGeo, blastMat);
-    m.visible = false;
-    m.frustumCulled = false;
-    worldGroup.add(m);
-    blastPool.push({ active: false, life: 0, maxLife: 0.30, maxRadius: 4.8, mesh: m, uniforms });
+  }
+
+  const combatVfx = G.combatVfx as CombatFeelVfxController | undefined;
+  if (combatVfx) {
+    combatVfx.registerBatch({
+      name: 'gunner_pulse_bolts',
+      meshes: [pulseBoltMesh, pulseCoreMesh],
+      getActiveCount: () => pulseBoltMesh.count,
+      legacyMeshesPerItem: 2,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_tracers',
+      meshes: [tracerCyanMesh, tracerOverMesh, tracerWhiteCoreMesh],
+      getActiveCount: () => tracerWhiteCoreMesh.count,
+      legacyMeshesPerItem: 2,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_impact_sparks',
+      meshes: [impactSparkMesh, impactCritSparkMesh],
+      getActiveCount: () => impactSparkMesh.count + impactCritSparkMesh.count,
+      legacyMeshesPerItem: 1,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_impact_rings',
+      meshes: [impactRingInstMesh],
+      getActiveCount: () => impactRingInstMesh.count,
+      legacyMeshesPerItem: 1,
+      eliminatedSceneMeshes: MAX_IMPACT_RINGS - 1,
+      eliminatedShaderMaterials: MAX_IMPACT_RINGS - 1,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_helix_rockets',
+      meshes: [rocketNoseInst, rocketBodyInst, rocketFinInst, rocketPlumeInst, rocketCoreInst],
+      getActiveCount: () => rocketNoseInst.count,
+      legacyMeshesPerItem: 6,
+      eliminatedSceneMeshes: MAX_ROCKETS * 6 - 5,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_plasma_blasts',
+      meshes: [blastInstMesh],
+      getActiveCount: () => blastInstMesh.count,
+      legacyMeshesPerItem: 1,
+      eliminatedSceneMeshes: MAX_BLASTS - 1,
+      eliminatedShaderMaterials: MAX_BLASTS - 1,
+    });
+    combatVfx.registerBatch({
+      name: 'gunner_shells',
+      meshes: [shellInstMesh],
+      getActiveCount: () => shellInstMesh.count,
+      legacyMeshesPerItem: 1,
+    });
   }
 
   // (F) 3D Deployable Biotic Overdrive Field (`生物超载力场信标 + 极坐标全息治疗阵`)
@@ -844,14 +960,20 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     ring.maxLife = isCrit ? 0.20 : 0.14;
     ring.life = ring.maxLife;
     ring.maxScale = isCrit ? 2.1 : isEnemyHit ? 1.45 : 0.95;
-    ring.mesh.position.copy(worldPt).addScaledVector(incomingDir, -0.05);
-    ring.mesh.quaternion.copy(G.camera.quaternion);
-    ring.uniforms.uColor.value.setHex(
-      isCrit ? 0xffc84a : isEnemyHit ? 0x56ecff : 0x9adfff
-    );
-    ring.uniforms.uProgress.value = 0;
-    ring.mesh.scale.setScalar(0.18);
-    ring.mesh.visible = true;
+    ring.pos.copy(worldPt).addScaledVector(incomingDir, -0.05);
+    if (isCrit) {
+      ring.colR = 1.0;
+      ring.colG = 0.784;
+      ring.colB = 0.29;
+    } else if (isEnemyHit) {
+      ring.colR = 0.337;
+      ring.colG = 0.925;
+      ring.colB = 1.0;
+    } else {
+      ring.colR = 0.604;
+      ring.colG = 0.875;
+      ring.colB = 1.0;
+    }
 
     const count = isCrit ? 12 : isEnemyHit ? 8 : 5;
     let spawned = 0;
@@ -896,9 +1018,8 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     b.maxLife = 0.28;
     b.life = 0.28;
     b.maxRadius = radius;
-    b.mesh.position.copy(center);
-    b.mesh.scale.setScalar(0.35);
-    b.mesh.visible = true;
+    b.pos.copy(center);
+    b.rotY = Math.random() * Math.PI * 2;
     if (G.render && G.render.lightPool) {
       G.render.lightPool.flash(center, 0xff9a3b, 65, radius * 2.4, 0.16);
     }
@@ -1175,10 +1296,6 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       .addScaledVector(r.right, Math.cos(phase) * spiralRadius)
       .addScaledVector(r.up, Math.sin(phase) * spiralRadius);
     r.prev.copy(r.pos);
-    r.mesh.position.copy(r.pos);
-    _q1.setFromUnitVectors(_zNeg, r.dir);
-    r.mesh.quaternion.copy(_q1);
-    r.mesh.visible = true;
   }
 
   function fireHelixVolley(): boolean {
@@ -1234,7 +1351,6 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
 
   function detonateHelixRocket(r: ActiveHelixRocket, impactPt: any, directEnemy: any) {
     r.active = false;
-    r.mesh.visible = false;
     cb.audio.helixExplode();
     spawnBlastVisual(impactPt, r.splashRadius);
     spawnBulletImpactFx(impactPt, r.dir, true, true);
@@ -1592,30 +1708,47 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
       impactCritSparkMesh.instanceMatrix.needsUpdate = true;
     }
 
+    let ringIdx = 0;
+    const camQuat = G.camera.quaternion;
     for (let i = 0; i < impactRingPool.length; i++) {
       const r = impactRingPool[i];
       if (!r.active) continue;
       r.life -= dt;
       if (r.life <= 0) {
         r.active = false;
-        r.mesh.visible = false;
         continue;
       }
       const p = clamp01(1 - r.life / r.maxLife);
-      r.uniforms.uProgress.value = p;
-      r.mesh.scale.setScalar(0.24 + p * r.maxScale);
-      r.mesh.quaternion.copy(G.camera.quaternion);
+      const sc = 0.24 + p * r.maxScale;
+      _scale.setScalar(sc);
+      _mat4.compose(r.pos, camQuat, _scale);
+      impactRingInstMesh.setMatrixAt(ringIdx, _mat4);
+      const d4 = ringIdx * 4;
+      impactRingInstData[d4] = r.colR;
+      impactRingInstData[d4 + 1] = r.colG;
+      impactRingInstData[d4 + 2] = r.colB;
+      impactRingInstData[d4 + 3] = p;
+      ringIdx++;
+    }
+    if (impactRingInstMesh.count !== ringIdx || ringIdx > 0) {
+      impactRingInstMesh.count = ringIdx;
+      impactRingInstMesh.visible = ringIdx > 0;
+      if (ringIdx > 0) {
+        impactRingInstMesh.instanceMatrix.needsUpdate = true;
+        impactRingInstAttr.needsUpdate = true;
+      }
     }
 
-    // 4. Update Corkscrew Helix Rockets
+    // 4. Update Corkscrew Helix Rockets (5 GPU InstancedMeshes instead of 120 individual Meshes!)
     gunnerShaderClock.value = clockT;
+    let rktIdx = 0;
+    const liveEcs = (G.ecsCombat as EcsCombatBridge | undefined) ?? ecsCombat;
     for (let i = 0; i < rocketPool.length; i++) {
       const r = rocketPool[i];
       if (!r.active) continue;
       r.life -= dt;
       if (r.life <= 0) {
         r.active = false;
-        r.mesh.visible = false;
         continue;
       }
 
@@ -1623,7 +1756,13 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
         if (r.homing && G.enemies && G.enemies.list) {
           let bestEn: any = null;
           let bestD2 = 42 * 42;
-          for (const en of G.enemies.list) {
+          let candList: any[] = G.enemies.list;
+          if (liveEcs) {
+            liveEcs.queryEnemiesInSphere(r.pos.x, r.pos.y, r.pos.z, 42, _ecsCand);
+            candList = _ecsCand;
+          }
+          for (let ci = 0; ci < candList.length; ci++) {
+            const en = candList[ci];
             if (!en.alive) continue;
             const d2 = en.pos.distanceToSquared(r.pos);
             if (d2 < bestD2) {
@@ -1678,27 +1817,67 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
         }
       }
 
-      r.mesh.position.copy(r.pos);
       _q1.setFromUnitVectors(_zNeg, r.dir);
-      r.mesh.quaternion.copy(_q1);
-      r.mesh.rotateZ(r.phase);
+      _q2.setFromAxisAngle(_zPos, r.phase);
+      _q1.multiply(_q2);
+      _scale.setScalar(1);
+      _mat4.compose(r.pos, _q1, _scale);
+      rocketNoseInst.setMatrixAt(rktIdx, _mat4);
+      rocketBodyInst.setMatrixAt(rktIdx, _mat4);
+      rocketFinInst.setMatrixAt(rktIdx, _mat4);
+      rocketPlumeInst.setMatrixAt(rktIdx, _mat4);
+      rocketCoreInst.setMatrixAt(rktIdx, _mat4);
+      rktIdx++;
+    }
+    if (rocketNoseInst.count !== rktIdx || rktIdx > 0) {
+      const hasRkts = rktIdx > 0;
+      rocketNoseInst.count = rktIdx;
+      rocketBodyInst.count = rktIdx;
+      rocketFinInst.count = rktIdx;
+      rocketPlumeInst.count = rktIdx;
+      rocketCoreInst.count = rktIdx;
+      rocketNoseInst.visible = hasRkts;
+      rocketBodyInst.visible = hasRkts;
+      rocketFinInst.visible = hasRkts;
+      rocketPlumeInst.visible = hasRkts;
+      rocketCoreInst.visible = hasRkts;
+      if (hasRkts) {
+        rocketNoseInst.instanceMatrix.needsUpdate = true;
+        rocketBodyInst.instanceMatrix.needsUpdate = true;
+        rocketFinInst.instanceMatrix.needsUpdate = true;
+        rocketPlumeInst.instanceMatrix.needsUpdate = true;
+        rocketCoreInst.instanceMatrix.needsUpdate = true;
+      }
     }
 
-    // 5. Update Turbulent Plasma Fireball Blasts
+    // 5. Update Turbulent Plasma Fireball Blasts (1 GPU InstancedMesh!)
+    let blIdx = 0;
     for (let i = 0; i < blastPool.length; i++) {
       const bl = blastPool[i];
       if (!bl.active) continue;
       bl.life -= dt;
       if (bl.life <= 0) {
         bl.active = false;
-        bl.mesh.visible = false;
         continue;
       }
       const p = clamp01(1 - bl.life / bl.maxLife);
       const ease = 1 - Math.pow(1 - p, 3);
-      bl.uniforms.uProgress.value = p;
-      bl.mesh.scale.setScalar(0.38 + ease * bl.maxRadius * 0.72);
-      bl.mesh.rotation.y += dt * 5;
+      bl.rotY += dt * 5;
+      const halfY = bl.rotY * 0.5;
+      _q1.set(0, Math.sin(halfY), 0, Math.cos(halfY));
+      _scale.setScalar(0.38 + ease * bl.maxRadius * 0.72);
+      _mat4.compose(bl.pos, _q1, _scale);
+      blastInstMesh.setMatrixAt(blIdx, _mat4);
+      blastProgressData[blIdx] = p;
+      blIdx++;
+    }
+    if (blastInstMesh.count !== blIdx || blIdx > 0) {
+      blastInstMesh.count = blIdx;
+      blastInstMesh.visible = blIdx > 0;
+      if (blIdx > 0) {
+        blastInstMesh.instanceMatrix.needsUpdate = true;
+        blastProgressAttr.needsUpdate = true;
+      }
     }
 
     // 6. Animate Deployable Biotic Overdrive Beacon & Polar Ground Aura
@@ -1936,22 +2115,30 @@ export function createGunnerWeapon(G: any, cb: GunnerWeaponCallbacks) {
     impactSparkMesh.instanceMatrix.needsUpdate = true;
     impactCritSparkMesh.instanceMatrix.needsUpdate = true;
 
-    for (const r of impactRingPool) {
-      r.active = false;
-      r.mesh.visible = false;
-    }
+    for (const r of impactRingPool) r.active = false;
+    impactRingInstMesh.count = 0;
+    impactRingInstMesh.visible = false;
+
     for (const sh of shellPool) sh.active = false;
     shellInstMesh.count = 0;
     shellInstMesh.instanceMatrix.needsUpdate = true;
 
-    for (const r of rocketPool) {
-      r.active = false;
-      r.mesh.visible = false;
-    }
-    for (const bl of blastPool) {
-      bl.active = false;
-      bl.mesh.visible = false;
-    }
+    for (const r of rocketPool) r.active = false;
+    rocketNoseInst.count = 0;
+    rocketBodyInst.count = 0;
+    rocketFinInst.count = 0;
+    rocketPlumeInst.count = 0;
+    rocketCoreInst.count = 0;
+    rocketNoseInst.visible = false;
+    rocketBodyInst.visible = false;
+    rocketFinInst.visible = false;
+    rocketPlumeInst.visible = false;
+    rocketCoreInst.visible = false;
+
+    for (const bl of blastPool) bl.active = false;
+    blastInstMesh.count = 0;
+    blastInstMesh.visible = false;
+
     bioticFieldTimer = 0;
     bioticBeaconGroup.visible = false;
   }

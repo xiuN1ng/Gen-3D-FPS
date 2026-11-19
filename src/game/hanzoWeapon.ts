@@ -25,6 +25,7 @@ import {
   PROJECTILE_KIND,
   type EcsCombatBridge,
 } from './ecsCombatBridge.ts';
+import type { CombatFeelVfxController } from './combatFeelVfx.ts';
 import type { GenjiAudioController } from './genjiAudio.ts';
 import {
   buildMasterworkStormBowRig,
@@ -561,20 +562,31 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
   }
 
   // (E) Pooled Ultimate: Twin Spiraling Azure Spirit Dragons (`龙 · 龙魂双生`, `MAX_DRAGONSTRIKES = 2`)
-  // Grazing-dissolved + longitudinal segment-feathered FBM Spirit-Fire Shader (zero plastic cylinder edges!)
+  // Grazing-dissolved + longitudinal segment-feathered FBM Spirit-Fire Shader (supports InstancedMesh!)
   const dragonScaleShaderMat = new THREE.ShaderMaterial({
     uniforms: {
       uTime: hanzoShaderClock,
       uOpacity: { value: 0.94 },
     },
     vertexShader: `
+      #ifdef USE_INSTANCING
+        attribute float aSegOpacity;
+      #endif
       varying vec2 vUv;
       varying vec3 vNormal;
       varying vec3 vViewPos;
+      varying float vSegOpacity;
       void main() {
         vUv = uv;
-        vNormal = normalize(normalMatrix * normal);
-        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        #ifdef USE_INSTANCING
+          vSegOpacity = aSegOpacity;
+          vec4 mvPos = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+          vNormal = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+        #else
+          vSegOpacity = 1.0;
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          vNormal = normalize(normalMatrix * normal);
+        #endif
         vViewPos = -mvPos.xyz;
         gl_Position = projectionMatrix * mvPos;
       }
@@ -585,6 +597,7 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
       varying vec2 vUv;
       varying vec3 vNormal;
       varying vec3 vViewPos;
+      varying float vSegOpacity;
 
       float hash21(vec2 p) {
         p = fract(p * vec2(123.34, 456.21));
@@ -624,7 +637,8 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
         vec3 col = mix(deepIndigo, luminousCyan, spiritFire * 0.68 + scalePattern * 0.32);
         col = mix(col, celestialWhite, clamp(spineCore * 1.15, 0.0, 1.0));
 
-        float alpha = silhouetteSoft * endFade * (0.36 + spiritFire * 0.48 + spineCore * 0.34) * uOpacity;
+        float effOpacity = uOpacity * vSegOpacity;
+        float alpha = silhouetteSoft * endFade * (0.36 + spiritFire * 0.48 + spineCore * 0.34) * effOpacity;
         if (alpha < 0.012) discard;
         gl_FragColor = vec4(col * 2.05, clamp(alpha, 0.0, 0.92));
       }
@@ -636,7 +650,7 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
     toneMapped: false,
   });
 
-  // Ethereal Spirit-Flame Mane, Antler & Whisker Shader (soft tip & silhouette fade, zero plastic cones!)
+  // Ethereal Spirit-Flame Mane, Antler & Whisker Shader (supports InstancedMesh!)
   const dragonManeWispMat = new THREE.ShaderMaterial({
     uniforms: {
       uTime: hanzoShaderClock,
@@ -647,8 +661,13 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
       varying vec3 vViewDir;
       void main() {
         vUv = uv;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vNormalV = normalize(normalMatrix * normal);
+        #ifdef USE_INSTANCING
+          vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+          vNormalV = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+        #else
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vNormalV = normalize(normalMatrix * normal);
+        #endif
         vViewDir = normalize(-mv.xyz);
         gl_Position = projectionMatrix * mv;
       }
@@ -790,7 +809,6 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
 
   interface SingleDragonChain {
     head: any;
-    segments: any[];
   }
   interface ActiveDragonstrike {
     active: boolean;
@@ -813,6 +831,34 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
   }
 
   const MAX_DRAGONSTRIKES = 2;
+  const TOTAL_DRAGON_SEG_INSTANCES = MAX_DRAGONSTRIKES * 2 * DRAGON_SEGMENTS;
+  const segBodyOpacityData = new Float32Array(TOTAL_DRAGON_SEG_INSTANCES).fill(1);
+  const segBodyOpacityAttr = new THREE.InstancedBufferAttribute(segBodyOpacityData, 1);
+  segBodyOpacityAttr.setUsage(THREE.DynamicDrawUsage);
+  segBodyGeo.setAttribute('aSegOpacity', segBodyOpacityAttr);
+
+  const dragonSegBodyInst = new THREE.InstancedMesh(
+    segBodyGeo,
+    dragonScaleShaderMat,
+    TOTAL_DRAGON_SEG_INSTANCES,
+  );
+  dragonSegBodyInst.frustumCulled = false;
+  dragonSegBodyInst.count = 0;
+  dragonSegBodyInst.visible = false;
+  dragonSegBodyInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(dragonSegBodyInst);
+
+  const dragonSegFinInst = new THREE.InstancedMesh(
+    segFinGeo,
+    dragonManeWispMat,
+    TOTAL_DRAGON_SEG_INSTANCES,
+  );
+  dragonSegFinInst.frustumCulled = false;
+  dragonSegFinInst.count = 0;
+  dragonSegFinInst.visible = false;
+  dragonSegFinInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  worldGroup.add(dragonSegFinInst);
+
   const dragonPool: ActiveDragonstrike[] = [];
   const axisBeamGeo = new THREE.CylinderGeometry(0.42, 0.42, DRAGON_BODY_LEN, 12, 1, true);
   axisBeamGeo.rotateX(Math.PI / 2);
@@ -826,19 +872,7 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
     const makeChain = (): SingleDragonChain => {
       const head = buildSpiritDragonHead();
       grp.add(head);
-      const segments: any[] = [];
-      for (let s = 0; s < DRAGON_SEGMENTS; s++) {
-        const segGrp = new THREE.Group();
-        segGrp.frustumCulled = false;
-        const body = new THREE.Mesh(segBodyGeo, dragonScaleShaderMat);
-        const dorsalFin = new THREE.Mesh(segFinGeo, dragonManeWispMat);
-        segGrp.add(body, dorsalFin);
-        const taper = 1.0 - (s / DRAGON_SEGMENTS) * 0.58;
-        segGrp.scale.setScalar(taper);
-        grp.add(segGrp);
-        segments.push(segGrp);
-      }
-      return { head, segments };
+      return { head };
     };
 
     const dragonA = makeChain();
@@ -865,6 +899,35 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
       dragonA,
       dragonB,
       coreAxisBeam,
+    });
+  }
+
+  const combatVfx = G.combatVfx as CombatFeelVfxController | undefined;
+  if (combatVfx) {
+    combatVfx.registerBatch({
+      name: 'hanzo_arrows',
+      meshes: [arrowShaftInst, arrowHeadInst, arrowWakeInst],
+      getActiveCount: () => arrowShaftInst.count,
+      legacyMeshesPerItem: 3,
+    });
+    combatVfx.registerBatch({
+      name: 'hanzo_slipstreams',
+      meshes: [slipstreamInst],
+      getActiveCount: () => slipstreamInst.count,
+      legacyMeshesPerItem: 1,
+    });
+    combatVfx.registerBatch({
+      name: 'hanzo_impact_sparks',
+      meshes: [sparkInst],
+      getActiveCount: () => sparkInst.count,
+      legacyMeshesPerItem: 1,
+    });
+    combatVfx.registerBatch({
+      name: 'hanzo_dragon_segments',
+      meshes: [dragonSegBodyInst, dragonSegFinInst],
+      getActiveCount: () => dragonSegBodyInst.count,
+      legacyMeshesPerItem: 2,
+      eliminatedSceneMeshes: TOTAL_DRAGON_SEG_INSTANCES * 2 - 2,
     });
   }
 
@@ -1294,7 +1357,9 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
   function updateDragonstrikes(dt: number, visualOnly: boolean) {
     const stats = cb.getStats();
     hanzoShaderClock.value = clockT;
+    dragonScaleShaderMat.uniforms.uOpacity.value = 0.94;
 
+    let segInstIdx = 0;
     for (let i = 0; i < dragonPool.length; i++) {
       const ds = dragonPool[i];
       if (!ds.active) continue;
@@ -1312,7 +1377,6 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
 
       const fadeRatio =
         Math.min(1, (ds.maxLife - ds.life) / 0.25) * Math.min(1, ds.life / 0.45);
-      dragonScaleShaderMat.uniforms.uOpacity.value = 0.94 * fadeRatio;
 
       // Position axis core beam along `[headPos - dir * DRAGON_BODY_LEN, headPos]`
       ds.coreAxisBeam.position.copy(ds.headPos);
@@ -1353,12 +1417,16 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
             .addScaledVector(ds.right, -Math.sin(ang) * 0.38)
             .addScaledVector(ds.up, Math.cos(ang) * 0.38)
             .normalize();
-          const segMesh = chain.segments[s];
-          segMesh.position.copy(_v1);
           _q1.setFromUnitVectors(_zNeg, _v2);
-          segMesh.quaternion.copy(_q1);
           const taper = (1.0 - (s / DRAGON_SEGMENTS) * 0.56) * ds.twinScale;
-          segMesh.scale.setScalar(taper);
+          _scale.setScalar(taper);
+          _mat4.compose(_v1, _q1, _scale);
+          if (segInstIdx < TOTAL_DRAGON_SEG_INSTANCES) {
+            dragonSegBodyInst.setMatrixAt(segInstIdx, _mat4);
+            dragonSegFinInst.setMatrixAt(segInstIdx, _mat4);
+            segBodyOpacityData[segInstIdx] = fadeRatio;
+            segInstIdx++;
+          }
         }
       };
 
@@ -1427,6 +1495,19 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
             }
           }
         }
+      }
+    }
+
+    if (dragonSegBodyInst.count !== segInstIdx || segInstIdx > 0) {
+      const hasSegs = segInstIdx > 0;
+      dragonSegBodyInst.count = segInstIdx;
+      dragonSegFinInst.count = segInstIdx;
+      dragonSegBodyInst.visible = hasSegs;
+      dragonSegFinInst.visible = hasSegs;
+      if (hasSegs) {
+        dragonSegBodyInst.instanceMatrix.needsUpdate = true;
+        dragonSegFinInst.instanceMatrix.needsUpdate = true;
+        segBodyOpacityAttr.needsUpdate = true;
       }
     }
   }
@@ -1930,6 +2011,10 @@ export function createHanzoWeapon(G: any, cb: HanzoWeaponCallbacks) {
       ds.active = false;
       ds.group.visible = false;
     }
+    dragonSegBodyInst.count = 0;
+    dragonSegFinInst.count = 0;
+    dragonSegBodyInst.visible = false;
+    dragonSegFinInst.visible = false;
     arrowShaftInst.count = 0;
     arrowHeadInst.count = 0;
     arrowWakeInst.count = 0;
