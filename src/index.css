@@ -1120,8 +1120,9 @@ body[data-hero="gunner"] {
   color: var(--genji);
 }
 
-/* =====================================================================  Genji Mobile Multi-Touch Overlay (#g-touch)  */
+/* =====================================================================  Pro Mobile Multi-Touch Overlay (#g-touch)  */
 .g-touch {
+  --gt-alpha: 0.86;
   position: fixed;
   inset: 0;
   z-index: 32;
@@ -1135,81 +1136,128 @@ body[data-hero="gunner"] {
   display: block;
 }
 
-/* Left-half movement thumbstick capture zone */
+/* Left-half movement thumbstick capture zone (leaves upper-left free for Left-Index Claw Fire `.gt-lfire`) */
 .gt-stick-zone {
   position: absolute;
   left: 0;
   bottom: 0;
   width: 46%;
-  height: 66%;
+  height: 70%;
   pointer-events: auto;
   touch-action: none;
   z-index: 2;
 }
 .gt-stick {
   position: absolute;
-  left: max(26px, calc(var(--sal) + 18px));
-  bottom: max(28px, calc(var(--sab) + 18px));
-  width: 112px;
-  height: 112px;
+  left: max(30px, calc(var(--sal) + 22px));
+  bottom: max(26px, calc(var(--sab) + 16px));
+  width: 116px;
+  height: 116px;
   pointer-events: none;
-  opacity: .78;
+  opacity: calc(var(--gt-alpha) * 0.9);
   transition: opacity .12s ease;
 }
 .gt-stick.dragging {
-  margin-left: -48px;
-  margin-top: -48px;
-  opacity: .98;
+  margin-left: -58px;
+  margin-top: -58px;
+  opacity: 1;
 }
+
+/* Peacekeeper Elite / Valorant Mobile Auto-Sprint Lock Pill (`上滑锁定疾跑`) */
+.gt-sprint-latch {
+  position: absolute;
+  left: 50%;
+  top: -38px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(10, 15, 20, .64);
+  border: 1px solid rgba(232, 228, 218, .28);
+  color: rgba(232, 228, 218, .72);
+  font: 700 10px/1 var(--f-label);
+  letter-spacing: .04em;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity .14s ease, transform .14s ease, border-color .14s ease, background .14s ease;
+}
+.gt-stick.dragging .gt-sprint-latch,
+.gt-stick.latched .gt-sprint-latch {
+  opacity: 1;
+}
+.gt-sprint-latch.near {
+  background: rgba(52, 36, 12, .88);
+  border-color: var(--signal-hot);
+  color: #fff2cc;
+  transform: translateX(-50%) translateY(-3px) scale(1.05);
+}
+.gt-sprint-latch.locked {
+  background: rgba(20, 62, 34, .92);
+  border-color: var(--genji);
+  color: #dcffe8;
+  box-shadow: 0 0 12px rgba(60, 255, 120, .35);
+}
+.gt-latch-ico {
+  font-size: 9px;
+  color: var(--signal-hot);
+}
+.gt-sprint-latch.locked .gt-latch-ico {
+  color: var(--genji);
+}
+
 .gt-stick-ring {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: rgba(10, 14, 18, .48);
-  border: 1.5px solid rgba(232, 228, 218, .36);
-  box-shadow: inset 0 0 0 1px rgba(60, 255, 120, .18);
+  background: radial-gradient(circle, rgba(16, 26, 22, .16) 0%, rgba(10, 14, 18, .54) 100%);
+  border: 1.6px solid rgba(232, 228, 218, .34);
+  box-shadow: inset 0 0 0 1px rgba(60, 255, 120, .14);
   transition: border-color .12s ease, box-shadow .12s ease;
 }
 .gt-stick.dragging .gt-stick-ring {
-  border-color: rgba(60, 255, 120, .74);
-  background: rgba(10, 20, 14, .56);
+  border-color: rgba(60, 255, 120, .72);
+  background: radial-gradient(circle, rgba(22, 46, 30, .24) 0%, rgba(10, 20, 14, .6) 100%);
 }
-.gt-stick.sprinting .gt-stick-ring {
+.gt-stick.sprinting .gt-stick-ring,
+.gt-stick.latched .gt-stick-ring {
   border-color: var(--signal-hot);
-  box-shadow: 0 0 14px rgba(255, 179, 71, .35), inset 0 0 0 1.5px rgba(255, 179, 71, .42);
+  box-shadow: 0 0 14px rgba(255, 179, 71, .32), inset 0 0 0 1.5px rgba(255, 179, 71, .4);
 }
 .gt-stick-nub {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 44px;
-  height: 44px;
-  margin-left: -22px;
-  margin-top: -22px;
+  width: 46px;
+  height: 46px;
+  margin-left: -23px;
+  margin-top: -23px;
   border-radius: 50%;
-  background: rgba(24, 42, 30, .88);
+  background: radial-gradient(circle at 38% 35%, rgba(68, 210, 118, .42), rgba(18, 34, 24, .92));
   border: 2px solid var(--genji);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .55);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .58);
   will-change: transform;
 }
-.gt-stick.sprinting .gt-stick-nub {
+.gt-stick.sprinting .gt-stick-nub,
+.gt-stick.latched .gt-stick-nub {
   border-color: var(--signal-hot);
-  background: rgba(48, 34, 14, .92);
+  background: radial-gradient(circle at 38% 35%, rgba(255, 196, 92, .48), rgba(46, 32, 12, .94));
 }
 
-/* Right-half camera swipe-look capture zone */
+/* Right-half + Center camera swipe-look capture zone */
 .gt-look-zone {
   position: absolute;
   right: 0;
   top: 0;
-  width: 54%;
+  width: 58%;
   height: 100%;
   pointer-events: auto;
   touch-action: none;
   z-index: 1;
 }
 
-/* Shared shinobi multi-touch button base */
+/* Shared tactical multi-touch button base (Valorant Mobile translucent frosted ring aesthetic) */
 .gt-btn {
   position: absolute;
   pointer-events: auto;
@@ -1221,47 +1269,96 @@ body[data-hero="gunner"] {
   padding: 0;
   margin: 0;
   border-radius: 50%;
-  background: rgba(11, 15, 18, .76);
-  border: 1.5px solid rgba(232, 228, 218, .42);
+  background: rgba(11, 16, 21, .68);
+  border: 1.5px solid rgba(232, 228, 218, .38);
   color: var(--bone);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .52);
+  opacity: var(--gt-alpha);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .46);
   -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
-  transition: transform .08s ease, border-color .12s ease, background .12s ease;
+  transition: transform .07s ease, border-color .12s ease, background .12s ease, opacity .12s ease;
 }
 .gt-btn * {
   pointer-events: none;
 }
 .gt-btn.held,
 .gt-btn:active {
-  transform: scale(0.93);
-  background: rgba(24, 52, 34, .88);
+  transform: scale(0.92);
+  opacity: 1;
+  background: rgba(24, 58, 38, .88);
   border-color: var(--genji);
 }
 .gt-main {
-  font: 700 17px/1 var(--f-display);
+  position: relative;
+  z-index: 2;
+  font: 800 17px/1 var(--f-display);
   letter-spacing: .04em;
   color: var(--bone);
 }
 .gt-sub {
-  margin-top: 3px;
-  font: 600 9px/1 var(--f-mono);
+  position: relative;
+  z-index: 2;
+  margin-top: 2px;
+  font: 700 9px/1 var(--f-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: .02em;
-  color: rgba(232, 228, 218, .76);
+  color: rgba(232, 228, 218, .82);
   white-space: nowrap;
 }
 
-/* Top-right Pause Button (>= 44px high) */
+/* SVG 360-degree Radial Skill Cooldown & Ultimate Charge Ring */
+.gt-ring-svg {
+  position: absolute;
+  inset: -2px;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  transform: rotate(-90deg);
+  z-index: 1;
+}
+.gt-ring-bg {
+  fill: none;
+  stroke: rgba(232, 228, 218, .12);
+  stroke-width: 2.6;
+}
+.gt-ring-fg {
+  fill: none;
+  stroke: var(--genji);
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  transition: stroke-dashoffset .08s linear, stroke .14s ease;
+}
+.gt-skill.cd .gt-ring-fg {
+  stroke: var(--signal);
+}
+.gt-fan .gt-ring-fg {
+  stroke: var(--cyan-blade);
+}
+.gt-ult .gt-ring-fg {
+  stroke: var(--signal-hot);
+}
+.gt-ult.ready .gt-ring-fg {
+  stroke: var(--genji);
+}
+
+/* Inner Tactical Crosshair Reticle Ring on Main & Left Fire Triggers */
+.gt-fire-reticle {
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  border: 1px dashed rgba(60, 255, 120, .34);
+  z-index: 1;
+}
+
+/* Top-right Pause & Settings Button (>= 44px high) */
 .gt-pause {
-  top: max(12px, calc(var(--sat) + 8px));
+  top: max(10px, calc(var(--sat) + 6px));
   right: max(12px, calc(var(--sar) + 8px));
   width: auto;
   min-width: 68px;
   height: 44px;
   padding: 0 12px;
-  border-radius: 0;
+  border-radius: 6px;
   flex-direction: row;
   gap: 6px;
   border-top: 2px solid var(--signal);
@@ -1272,25 +1369,25 @@ body[data-hero="gunner"] {
   color: var(--signal);
 }
 .gt-pause .gt-txt {
-  font: 600 12px/1 var(--f-label);
-  letter-spacing: .12em;
+  font: 700 12px/1 var(--f-label);
+  letter-spacing: .1em;
   color: var(--bone);
 }
 
-/* Contextual Spirit Shrine Purification Hold Button */
+/* Contextual Spirit Shrine / Boss Bell Interaction Button */
 .gt-interact {
   left: 50%;
-  bottom: calc(30% + var(--sab));
+  bottom: calc(22% + var(--sab));
   transform: translateX(-50%);
   width: auto;
-  min-width: 164px;
-  height: 48px;
+  min-width: 168px;
+  height: 46px;
   padding: 0 18px;
-  border-radius: 0;
+  border-radius: 6px;
   border: 1.5px solid var(--signal);
-  background: rgba(14, 16, 18, .88);
+  background: rgba(14, 16, 18, .9);
   overflow: hidden;
-  z-index: 4;
+  z-index: 5;
 }
 .gt-interact.held,
 .gt-interact:active {
@@ -1308,28 +1405,103 @@ body[data-hero="gunner"] {
   position: relative;
   z-index: 1;
   font: 700 13px/1 var(--f-label);
-  letter-spacing: .12em;
+  letter-spacing: .1em;
   color: var(--signal-hot);
   white-space: nowrap;
 }
 
-/* Left-Hand Secondary Fire Trigger (`左食指/左手开火键`, 54x54px) */
+/* Bottom-Center Compact Tactical Status Bar (`瓦罗兰特手游` style HP + Live Ammo) */
+.gt-hud-bar {
+  position: absolute;
+  left: 50%;
+  bottom: max(10px, calc(var(--sab) + 6px));
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 14px;
+  background: rgba(10, 14, 19, .78);
+  border: 1px solid rgba(232, 228, 218, .22);
+  border-bottom: 2px solid var(--genji);
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  pointer-events: none;
+  z-index: 3;
+  font-variant-numeric: tabular-nums;
+}
+.gt-hud-bar.is-low {
+  border-bottom-color: var(--alarm);
+  background: rgba(34, 12, 12, .86);
+}
+.gt-hb-hp {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.gt-hb-k {
+  font: 800 10px/1 var(--f-mono);
+  color: rgba(232, 228, 218, .65);
+}
+.gt-hb-track {
+  width: 72px;
+  height: 6px;
+  background: rgba(232, 228, 218, .15);
+  overflow: hidden;
+}
+.gt-hb-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #3cff78, #8effb2);
+  transform-origin: left center;
+  transition: transform .12s ease-out;
+}
+.gt-hud-bar.is-low .gt-hb-fill {
+  background: linear-gradient(90deg, #ff3e2e, #ff9642);
+}
+.gt-hb-val {
+  min-width: 28px;
+  font: 800 14px/1 var(--f-mono);
+  color: #ffffff;
+}
+.gt-hud-bar.is-low .gt-hb-val {
+  color: #ff9c8f;
+}
+.gt-hb-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(232, 228, 218, .22);
+}
+.gt-hb-ammo-val {
+  font: 800 13px/1 var(--f-mono);
+  color: var(--signal-hot);
+  white-space: nowrap;
+}
+
+/* Upper-Left Claw / Dual-Fire Trigger (`左手食指开火键` — Peacekeeper Elite / Valorant Mobile standard) */
 .gt-lfire {
-  left: max(18px, calc(var(--sal) + 10px));
-  bottom: max(142px, calc(var(--sab) + 136px));
-  width: 54px;
-  height: 54px;
-  background: rgba(14, 28, 20, .82);
-  border: 1.8px solid rgba(60, 255, 120, .72);
+  left: max(22px, calc(var(--sal) + 14px));
+  top: max(54px, calc(var(--sat) + 46px));
+  width: 60px;
+  height: 60px;
+  background: rgba(12, 28, 19, .76);
+  border: 2px solid rgba(60, 255, 120, .78);
   z-index: 4;
 }
+.g-touch[data-layout="thumb2"] .gt-lfire {
+  left: max(20px, calc(var(--sal) + 12px));
+  top: auto;
+  bottom: max(154px, calc(var(--sab) + 146px));
+  width: 56px;
+  height: 56px;
+}
 .gt-lfire .gt-main {
-  font-size: 18px;
+  font-size: 19px;
   color: var(--genji);
 }
 .gt-lfire .gt-sub {
   font-size: 8.5px;
-  color: rgba(232, 228, 218, .78);
+  color: rgba(232, 228, 218, .82);
 }
 .gt-lfire.dragon {
   background: rgba(44, 30, 10, .9);
@@ -1339,39 +1511,39 @@ body[data-hero="gunner"] {
   color: var(--signal-hot);
 }
 
-/* Right-Thumb Radial Action Cluster (Zero Overlap, native >= 48x48px hitboxes) */
+/* Right-Hand Tactical Action Arc Cluster (`瓦罗兰特手游 / 和平精英` Ergonomic Layout, Zero Overlap) */
 .gt-cluster {
   position: absolute;
   right: max(10px, var(--sar));
   bottom: max(8px, var(--sab));
-  width: 266px;
-  height: 226px;
+  width: 288px;
+  height: 236px;
   pointer-events: none;
   z-index: 4;
 }
 
-/* Primary Fire / Bow Draw / Dragonblade Cleave (80x80px anchor) */
+/* Primary Fire / Bow Draw / Dragonblade Cleave (84x84px ergonomic right-thumb anchor) */
 .gt-fire {
-  right: 10px;
-  bottom: 8px;
-  width: 80px;
-  height: 80px;
-  background: rgba(14, 32, 20, .86);
+  right: 12px;
+  bottom: 10px;
+  width: 84px;
+  height: 84px;
+  background: radial-gradient(circle at 40% 35%, rgba(28, 68, 42, .88), rgba(10, 22, 15, .92));
   border: 2.2px solid var(--genji);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .58), inset 0 0 0 1px rgba(60, 255, 120, .2);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(60, 255, 120, .22);
 }
 .gt-fire .gt-main {
-  font-size: 24px;
+  font-size: 25px;
   color: var(--genji);
 }
 .gt-fire .gt-sub {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--bone);
 }
 .gt-fire.dragon {
-  background: rgba(44, 30, 10, .92);
+  background: radial-gradient(circle at 40% 35%, rgba(78, 48, 14, .92), rgba(32, 20, 8, .95));
   border-color: var(--signal-hot);
-  box-shadow: 0 0 14px rgba(255, 179, 71, .38);
+  box-shadow: 0 0 16px rgba(255, 179, 71, .42);
 }
 .gt-fire.dragon .gt-main {
   font-size: 19px;
@@ -1383,29 +1555,29 @@ body[data-hero="gunner"] {
 
 /* Secondary Fan Volley / Cancel Draw / Helix Rockets (54x54px) */
 .gt-fan {
-  right: 104px;
-  bottom: 6px;
+  right: 110px;
+  bottom: 8px;
   width: 54px;
   height: 54px;
-  border-color: rgba(92, 225, 230, .72);
+  border-color: rgba(92, 225, 230, .7);
 }
 .gt-fan .gt-main {
   color: var(--cyan-blade);
 }
 .gt-fan.dim {
-  opacity: .38;
+  opacity: calc(var(--gt-alpha) * 0.44);
 }
 
-/* Shinobi Agility Jump / Double-Jump / Lunge / Hold Wall-Climb (56x56px) */
+/* Shinobi Agility Jump / Double-Jump / Lunge / Hold Wall-Climb (56x56px upper-right edge) */
 .gt-jump {
   right: 4px;
-  bottom: 102px;
+  bottom: 108px;
   width: 56px;
   height: 56px;
-  border-color: rgba(232, 228, 218, .64);
+  border-color: rgba(232, 228, 218, .65);
 }
 .gt-jump.active {
-  background: rgba(20, 56, 34, .92);
+  background: rgba(20, 58, 35, .92);
   border-color: var(--genji);
 }
 .gt-jump.active .gt-main,
@@ -1413,35 +1585,55 @@ body[data-hero="gunner"] {
   color: var(--genji);
 }
 
-/* E · Deflect / Storm Arrows / Biotic Field (54x54px) */
-.gt-deflect {
-  right: 90px;
-  bottom: 90px;
-  width: 54px;
-  height: 54px;
-  border-color: rgba(60, 255, 120, .66);
+/* Dedicated Tactical Crouch / Cover Peek Toggle (`蹲`, 48x48px beside Jump & Fire) */
+.gt-crouch {
+  right: 174px;
+  bottom: 8px;
+  width: 48px;
+  height: 48px;
+  border-color: rgba(232, 228, 218, .44);
+}
+.gt-crouch .gt-main {
+  font-size: 15px;
+}
+.gt-crouch.active {
+  background: rgba(22, 56, 68, .92);
+  border-color: var(--cyan-blade);
+}
+.gt-crouch.active .gt-main,
+.gt-crouch.active .gt-sub {
+  color: var(--cyan-blade);
 }
 
-/* Shift · Swift Strike / Sonic Arrow / Tactical Sprint (54x54px) */
-.gt-swift {
-  right: 158px;
-  bottom: 44px;
+/* E · Deflect / Storm Arrows / Biotic Field (54x54px inner arc) */
+.gt-deflect {
+  right: 92px;
+  bottom: 94px;
   width: 54px;
   height: 54px;
-  border-color: rgba(60, 255, 120, .66);
+  border-color: rgba(60, 255, 120, .62);
+}
+
+/* Shift · Swift Strike / Sonic Arrow / Tactical Sprint (54x54px outer arc) */
+.gt-swift {
+  right: 162px;
+  bottom: 68px;
+  width: 54px;
+  height: 54px;
+  border-color: rgba(60, 255, 120, .62);
 }
 .gt-skill.cd {
-  background: rgba(10, 12, 14, .8);
+  background: rgba(10, 12, 16, .78);
   border-color: rgba(232, 228, 218, .22);
 }
 .gt-skill.cd .gt-main {
-  color: rgba(232, 228, 218, .44);
+  color: rgba(232, 228, 218, .45);
 }
 .gt-skill.cd .gt-sub {
   color: var(--signal);
 }
 .gt-skill.active {
-  background: rgba(22, 62, 36, .92);
+  background: rgba(22, 64, 38, .92);
   border-color: var(--genji);
 }
 .gt-skill.active .gt-main,
@@ -1449,30 +1641,30 @@ body[data-hero="gunner"] {
   color: var(--genji);
 }
 .gt-skill.reset-flash {
-  background: rgba(42, 108, 62, .94);
+  background: rgba(42, 108, 62, .95);
   border-color: #b5ffd0;
 }
 
-/* Q · Ultimate Ability (58x58px) */
+/* Q · Ultimate Ability (60x60px crown anchor) */
 .gt-ult {
   right: 84px;
-  bottom: 156px;
-  width: 58px;
-  height: 58px;
+  bottom: 162px;
+  width: 60px;
+  height: 60px;
   border: 2px solid rgba(232, 228, 218, .38);
-  background: rgba(12, 16, 18, .86);
+  background: rgba(12, 16, 20, .84);
 }
 .gt-ult.ready {
-  background: rgba(18, 56, 30, .94);
+  background: rgba(18, 58, 32, .95);
   border-color: var(--genji);
-  box-shadow: 0 0 14px rgba(60, 255, 120, .42);
+  box-shadow: 0 0 16px rgba(60, 255, 120, .45);
 }
 .gt-ult.ready .gt-main,
 .gt-ult.ready .gt-sub {
   color: var(--genji);
 }
 .gt-ult.active {
-  background: rgba(48, 32, 10, .94);
+  background: rgba(48, 32, 10, .95);
   border-color: var(--signal-hot);
 }
 .gt-ult.active .gt-main,
@@ -1490,133 +1682,167 @@ body[data-hero="gunner"] {
   font-size: 15px;
 }
 .gt-melee {
-  right: 160px;
-  bottom: 118px;
+  right: 162px;
+  bottom: 134px;
 }
 .gt-reload {
   right: 6px;
-  bottom: 170px;
+  bottom: 174px;
 }
 .gt-btn[hidden] {
   display: none !important;
 }
 
-/* Mobile HUD De-cluttering & Corner Clearance when Genji Touch UI is Active */
+/* Mobile HUD De-cluttering & Corner Clearance when Pro Touch UI is Active */
 html.is-genji-touch .touch,
 html.is-genji-touch .g-abilities,
 html.is-genji-touch .g-ult,
+html.is-genji-touch .h-health,
 html.is-genji-touch .h-ammo,
 html.is-genji-touch .h-prompt {
   display: none !important;
 }
 html.is-genji-touch .h-compass {
   top: calc(8px + var(--sat));
-  width: min(220px, calc(100vw - 176px));
+  width: min(220px, calc(100vw - 196px));
 }
 html.is-genji-touch .h-heading {
   display: none;
 }
 html.is-genji-touch .h-obj {
-  top: calc(12px + var(--sat));
-  left: var(--gl);
-  max-width: min(220px, 48vw);
-  padding-left: 9px;
+  top: calc(10px + var(--sat));
+  left: max(18px, calc(var(--sal) + 12px));
+  max-width: min(230px, 44vw);
+  padding-left: 8px;
 }
 html.is-genji-touch .h-obj-t {
-  font-size: 13px;
-  line-height: 1.35;
-  margin: 3px 0 5px;
-  min-height: 16px;
-}
-html.is-genji-touch .h-health {
-  bottom: auto;
-  top: calc(92px + var(--sat));
-  left: var(--gl);
-  padding: 5px 10px 6px;
-}
-html.is-genji-touch .h-hp-row {
-  gap: 7px;
-  margin-top: 4px;
-}
-html.is-genji-touch .h-hp-n {
-  font-size: 24px;
-}
-html.is-genji-touch .h-hp-bar i {
-  width: 10px;
-  height: 4px;
+  font-size: 12.5px;
+  line-height: 1.3;
+  margin: 2px 0 3px;
+  min-height: 15px;
 }
 html.is-genji-touch .g-build-strip {
-  top: calc(146px + var(--sat));
-  left: var(--gl);
-  max-width: min(210px, 48vw);
-  font-size: 10px;
+  display: none;
 }
 html.is-genji-touch .g-boss {
-  top: calc(56px + var(--sat));
-  width: min(290px, calc(100vw - 170px));
+  top: calc(50px + var(--sat));
+  width: min(290px, calc(100vw - 200px));
   padding: 5px 10px 7px;
 }
 html.is-genji-touch .h-feed {
-  top: calc(64px + var(--sat));
+  top: calc(58px + var(--sat));
   right: max(12px, var(--sar));
 }
 html.is-genji-touch .h-warn {
-  top: calc(19% + var(--sat));
-  font-size: clamp(18px, 4.8vw, 28px);
+  top: calc(18% + var(--sat));
+  font-size: clamp(18px, 4.6vw, 26px);
 }
 html.is-genji-touch .h-msg {
   bottom: auto;
-  top: calc(25% + var(--sat));
+  top: calc(24% + var(--sat));
 }
 html.is-genji-touch .comms {
   bottom: auto;
-  top: calc(30% + var(--sat));
+  top: calc(29% + var(--sat));
 }
 
 /* Landscape Phone HUD & 3-Column Roguelike Talent Draft (e.g. 844x390 / 932x430) */
 @media (max-height: 540px) and (orientation: landscape) {
   .gt-cluster {
-    right: max(10px, var(--sar));
-    bottom: max(6px, var(--sab));
+    right: max(8px, var(--sar));
+    bottom: max(4px, var(--sab));
+    width: 274px;
+    height: 222px;
+  }
+  .gt-fire {
+    right: 10px;
+    bottom: 6px;
+    width: 80px;
+    height: 80px;
+  }
+  .gt-fan {
+    right: 104px;
+    bottom: 6px;
+    width: 52px;
+    height: 52px;
+  }
+  .gt-crouch {
+    right: 166px;
+    bottom: 6px;
+    width: 46px;
+    height: 46px;
+  }
+  .gt-jump {
+    right: 2px;
+    bottom: 98px;
+    width: 54px;
+    height: 54px;
+  }
+  .gt-deflect {
+    right: 86px;
+    bottom: 86px;
+    width: 52px;
+    height: 52px;
+  }
+  .gt-swift {
+    right: 152px;
+    bottom: 62px;
+    width: 52px;
+    height: 52px;
+  }
+  .gt-ult {
+    right: 78px;
+    bottom: 150px;
+    width: 56px;
+    height: 56px;
+  }
+  .gt-melee {
+    right: 150px;
+    bottom: 124px;
+    width: 46px;
+    height: 46px;
+  }
+  .gt-reload {
+    right: 4px;
+    bottom: 162px;
+    width: 46px;
+    height: 46px;
   }
   .gt-lfire {
-    left: max(16px, calc(var(--sal) + 8px));
-    bottom: max(134px, calc(var(--sab) + 128px));
+    left: max(18px, calc(var(--sal) + 10px));
+    top: max(48px, calc(var(--sat) + 42px));
+    width: 56px;
+    height: 56px;
+  }
+  .g-touch[data-layout="thumb2"] .gt-lfire {
+    top: auto;
+    bottom: max(136px, calc(var(--sab) + 130px));
     width: 52px;
     height: 52px;
   }
   .gt-stick {
-    width: 96px;
-    height: 96px;
-    left: max(28px, calc(var(--sal) + 20px));
+    width: 100px;
+    height: 100px;
+    left: max(26px, calc(var(--sal) + 18px));
     bottom: max(16px, var(--sab));
   }
   .gt-stick.dragging {
-    margin-left: -48px;
-    margin-top: -48px;
+    margin-left: -50px;
+    margin-top: -50px;
+  }
+  .gt-hud-bar {
+    height: 28px;
+    padding: 0 11px;
+    bottom: max(6px, var(--sab));
+    gap: 8px;
+  }
+  .gt-hb-track {
+    width: 56px;
   }
   .gt-pause {
-    top: calc(8px + var(--sat));
-    min-height: 44px;
-    min-width: 68px;
-  }
-  html.is-genji-touch .h-obj {
-    top: calc(8px + var(--sat));
-    max-width: min(240px, 44vw);
-  }
-  html.is-genji-touch .h-obj-t {
-    font-size: 12.5px;
-    margin: 2px 0 3px;
-  }
-  html.is-genji-touch .h-health {
-    top: calc(74px + var(--sat));
-    padding: 3px 8px 4px;
-  }
-  html.is-genji-touch .h-hp-n {
-    font-size: 22px;
-  }
-  html.is-genji-touch .g-build-strip {
-    display: none;
+    top: calc(6px + var(--sat));
+    min-height: 40px;
+    min-width: 64px;
   }
   .g-draft {
     padding: calc(8px + var(--sat)) max(14px, var(--gr)) calc(8px + var(--sab)) max(14px, var(--gl));
@@ -1659,111 +1885,11 @@ html.is-genji-touch .comms {
 }
 
 /* ==========================================================================
-   SHINOBI SPIRIT-SENSE ENEMY LOCATOR (.g-tracker-layer) & COLOSSAL BOSS HUD
-   Zero backdrop-filter — pure crisp vector shapes & tabular numerals
+   ENEMY HUD RED-DOT TRACKER DISABLED (Per User Design: Pure 3D Battlefield Visibility)
    ========================================================================== */
-.g-tracker-layer {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 14;
-  overflow: hidden;
-}
-body:not([data-state="playing"]) .g-tracker-layer {
-  display: none !important;
-}
-
+.g-tracker-layer,
 .g-trk {
-  position: absolute;
-  left: 0;
-  top: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  pointer-events: none;
-  will-change: transform, opacity;
-  font-variant-numeric: tabular-nums;
-}
-.g-trk[hidden] {
   display: none !important;
-}
-
-.g-trk-pin {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.g-trk-diamond {
-  width: 10px;
-  height: 10px;
-  transform: rotate(45deg);
-  background: rgba(232, 68, 42, 0.92);
-  border: 1.5px solid #fff2d6;
-  box-shadow: 0 0 8px rgba(232, 68, 42, 0.65);
-}
-.g-trk.is-priority .g-trk-diamond {
-  width: 12px;
-  height: 12px;
-  background: #ff9a2e;
-  border-color: #fffbe8;
-  box-shadow: 0 0 10px rgba(255, 154, 46, 0.8);
-}
-.g-trk.is-boss .g-trk-diamond {
-  width: 16px;
-  height: 16px;
-  background: #ff2e1f;
-  border: 2px solid #ffd86b;
-  box-shadow: 0 0 14px rgba(255, 72, 36, 0.95);
-}
-.g-trk.is-edge .g-trk-diamond {
-  background: rgba(255, 106, 48, 0.95);
-}
-.g-trk.is-sonic .g-trk-diamond {
-  width: 13px;
-  height: 13px;
-  background: #38d4ff;
-  border-color: #e8fcff;
-  box-shadow: 0 0 12px rgba(56, 212, 255, 0.95);
-}
-
-.g-trk-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 7px;
-  background: rgba(10, 12, 15, 0.8);
-  clip-path: polygon(5px 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
-  color: #f6efe2;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1.25;
-  letter-spacing: 0.02em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
-  white-space: nowrap;
-}
-.g-trk.is-priority .g-trk-tag {
-  color: #ffd88a;
-}
-.g-trk.is-sonic .g-trk-tag {
-  background: rgba(8, 26, 38, 0.88);
-  border-bottom: 1px solid rgba(56, 212, 255, 0.7);
-  color: #96f2ff;
-}
-.g-trk.is-boss .g-trk-tag {
-  background: rgba(38, 12, 10, 0.9);
-  color: #ffe7a8;
-  font-size: 11.5px;
-}
-.g-trk-elev {
-  color: #ffd66b;
-  font-weight: 800;
-}
-.g-trk-elev.is-low {
-  color: #7ee6ff;
 }
 
 /* Top-Left Tactical Action Row (Locked Hero Identity Readout + Boss Bell CTA) */
@@ -1813,9 +1939,6 @@ body:not([data-state="playing"]) .g-tracker-layer {
   transition: transform 0.12s cubic-bezier(.16, 1, .3, 1), border-color 0.12s ease, background 0.12s ease;
   -webkit-appearance: none;
   appearance: none;
-}
-
-.g-bell-cta {
   background: rgba(26, 13, 10, 0.86);
   border: 1px solid rgba(255, 182, 88, 0.52);
   color: #f8ecd4;
@@ -1959,22 +2082,24 @@ body:not([data-state="playing"]) .g-tracker-layer {
   box-shadow: none;
 }
 
+/* Position Boss Bell CTA cleanly beside upper-left Claw Fire on Touch (hide static hero badge to save space) */
+html.is-genji-touch .g-hero-badge {
+  display: none !important;
+}
 html.is-genji-touch .g-top-actions {
-  top: calc(136px + var(--sat));
+  top: calc(10px + var(--sat));
+  left: auto;
+  right: calc(max(12px, calc(var(--sar) + 8px)) + 154px);
   gap: 6px;
 }
-html.is-genji-touch .g-hero-badge,
 html.is-genji-touch .g-bell-cta {
-  min-height: 36px;
-  padding: 4px 10px;
+  min-height: 38px;
+  padding: 4px 11px;
   font-size: 11px;
-}
-html.is-genji-touch .g-build-strip {
-  top: calc(180px + var(--sat));
 }
 html.is-genji-touch .g-colossus {
   top: calc(46px + var(--sat));
-  width: min(360px, calc(100vw - 180px));
+  width: min(350px, calc(100vw - 220px));
   padding: 5px 12px 7px;
 }
 html.is-genji-touch .g-bell-cta kbd {
@@ -1982,16 +2107,16 @@ html.is-genji-touch .g-bell-cta kbd {
 }
 @media (max-height: 540px) and (orientation: landscape) {
   html.is-genji-touch .g-top-actions {
-    top: calc(118px + var(--sat));
-    gap: 6px;
+    top: calc(6px + var(--sat));
+    right: calc(max(12px, calc(var(--sar) + 8px)) + 148px);
   }
   html.is-genji-touch .g-bell-cta {
-    min-height: 44px;
-    padding: 4px 12px;
+    min-height: 38px;
+    padding: 4px 10px;
   }
   html.is-genji-touch .g-colossus {
-    top: calc(40px + var(--sat));
-    width: min(340px, calc(100vw - 220px));
+    top: calc(42px + var(--sat));
+    width: min(330px, calc(100vw - 240px));
     padding: 4px 12px 6px;
   }
 }
